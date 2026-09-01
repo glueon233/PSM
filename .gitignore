@@ -1,0 +1,23 @@
+# 运行时数据（用户/会话/链接数据库）
+data/
+
+# HLS 输出
+hls/
+
+# 生成的模拟视频源
+source/*.avi
+source/*.wav
+source/*.mp4
+source/*.mkv
+
+# Python
+__pycache__/
+*.pyc
+
+# 日志与临时文件
+*.log
+.dlna_uuid
+
+# 本地启动脚本（可能包含明文密码）
+run.txt
+run.bat

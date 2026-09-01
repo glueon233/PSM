@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamMedia 管理员登录</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.auth-wrap { display: flex; justify-content: center; padding-top: 12vh; }
+.auth-card { width: min(360px, 92vw); padding: 26px 28px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+.auth-card h1 { font-size: 17px; margin-bottom: 6px; color: var(--accent-2); }
+.auth-card p { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
+#login-form { display: flex; flex-direction: column; gap: 14px; }
+#login-form label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+#login-form input {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px; font-size: 14px; outline: none;
+}
+#login-form input:focus { border-color: var(--accent); }
+.msg { min-height: 20px; font-size: 13px; color: var(--red); }
+.back { display: block; margin-top: 14px; font-size: 12px; color: var(--muted); text-decoration: none; }
+.back:hover { color: var(--accent-2); }
+</style>
+</head>
+<body>
+<main class="auth-wrap">
+  <div class="auth-card">
+    <h1>▶ StreamMedia 管理控制台</h1>
+    <p>管理员登录后管理媒体源、白名单与限时链接</p>
+    <form id="login-form" autocomplete="off">
+      <label>管理员账号
+        <input type="text" id="login-user" required autofocus>
+      </label>
+      <label>密码
+        <input type="password" id="login-pass" required>
+      </label>
+      <button type="submit" class="btn primary" id="login-btn">登录</button>
+      <p class="msg" id="login-msg"></p>
+    </form>
+    <a class="back" href="/client/">← 返回客户端入口</a>
+  </div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+$("#login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("#login-btn"), msg = $("#login-msg");
+  btn.disabled = true;
+  msg.textContent = "";
+  try {
+    const res = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#login-user").value.trim(), password: $("#login-pass").value }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "登录失败");
+    location.href = "/admin";
+  } catch (err) {
+    msg.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

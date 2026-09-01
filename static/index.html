@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamMedia 控制台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">▶ StreamMedia<span class="brand-sub">管理控制台</span></div>
+  <div class="status-pills">
+    <span class="pill" id="pill-uptime" title="服务器运行时长">运行 <b id="uptime">--</b></span>
+    <span class="pill" id="pill-hls" title="HLS 直播转码依赖 ffmpeg">HLS <b id="hls-status">检测中…</b></span>
+    <span class="pill" id="pill-dlna" title="DLNA/UPnP 媒体服务器">DLNA <b id="dlna-status">检测中…</b></span>
+    <span class="pill" id="pill-count" title="媒体源数量">媒体源 <b id="video-count">--</b></span>
+    <button class="btn small ghost" id="btn-admin-logout">退出</button>
+  </div>
+</header>
+
+<main>
+  <section class="help card">
+    <h2>用户与白名单</h2>
+    <p class="hint">用户注册后进入待审批列表，审批通过即加入白名单可登录申请限时链接。
+      客户端入口：<a class="code" href="/client/" target="_blank">/client/</a>（本机：<span class="code">http://localhost:8000/client/</span>）</p>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>待审批注册 <span class="muted" id="pending-count"></span></h2></div>
+    <div id="pending-list"><div class="empty">暂无待审批用户</div></div>
+    <div class="section-head"><h2>白名单（已激活用户）</h2></div>
+    <div id="user-list"><div class="empty">暂无已激活用户</div></div>
+    <div class="section-head"><h2>全部限时链接</h2></div>
+    <div id="admin-link-list"><div class="empty">暂无有效链接</div></div>
+  </section>
+
+  <section class="help card">
+    <h2>如何用 VLC 播放</h2>
+    <ol>
+      <li>打开 VLC → <b>媒体</b> → <b>打开网络串流</b>（Ctrl+N）</li>
+      <li>粘贴限时链接（客户端申请，或下方「VLC 链接」按钮生成）</li>
+      <li>点击 <b>播放</b>，支持拖动进度条与多客户端同时访问</li>
+    </ol>
+    <p class="hint">本机访问用 localhost 即可；局域网内其他设备请使用本机 IP，如
+      <span class="code" id="lan-example">http://127.0.0.1:8000/play/xxx</span>
+    </p>
+  </section>
+
+  <section class="help card" id="dlna-help">
+    <h2>DLNA / UPnP 投屏与浏览</h2>
+    <p>服务器已作为 <b id="dlna-name">--</b> 广播到局域网。任何 DLNA 客户端（电视、手机播放器、VLC）均可直接浏览并播放 <span class="code">source</span> 目录中的媒体：</p>
+    <ol>
+      <li>VLC → <b>播放列表</b> → 左侧 <b>本地网络</b> → <b>Universal Plug'n'Play</b></li>
+      <li>展开设备 <b id="dlna-name2">--</b>，浏览目录并双击播放</li>
+      <li>电视/手机端在「媒体服务器 / 局域网设备」中选择同一设备名</li>
+    </ol>
+    <p class="hint">设备 UUID：<span class="code" id="dlna-udn">--</span> ·
+      广播地址：<span class="code" id="dlna-ip">--</span> ·
+      M-SEARCH 请求：<b id="dlna-msearch">0</b></p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>媒体源 <span class="muted" id="source-dir"></span></h2>
+      <button class="btn ghost" id="btn-refresh">⟳ 刷新</button>
+    </div>
+    <div class="video-grid" id="video-grid">
+      <div class="empty">加载中…</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>HLS 直播流</h2></div>
+    <div id="stream-list">
+      <div class="empty">暂无运行中的 HLS 流</div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+<div id="preview-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="preview-title">预览</span>
+      <button class="btn ghost" id="preview-close">✕</button>
+    </div>
+    <video id="preview-video" controls autoplay></video>
+    <audio id="preview-audio" controls autoplay></audio>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

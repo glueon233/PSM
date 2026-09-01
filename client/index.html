@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamMedia 客户端</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/client/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">▶ StreamMedia<span class="brand-sub">私人流媒体客户端</span></div>
+  <div class="status-pills" id="user-pills" style="display:none">
+    <span class="pill">用户 <b id="user-name">--</b></span>
+    <button class="btn small ghost" id="btn-logout">退出</button>
+  </div>
+</header>
+
+<main>
+  <!-- 登录 / 注册 -->
+  <section id="auth-view" class="auth-wrap hidden">
+    <div class="card auth-card">
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">登录</button>
+        <button class="auth-tab" data-tab="register">注册</button>
+      </div>
+      <form id="auth-form" autocomplete="off">
+        <label>用户名
+          <input type="text" id="auth-username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\-]+">
+        </label>
+        <label>密码
+          <input type="password" id="auth-password" required minlength="8">
+        </label>
+        <p class="hint" id="register-hint" style="display:none">
+          注册后账号进入待审批状态，由管理员加入白名单后方可登录使用。
+        </p>
+        <button type="submit" class="btn primary" id="auth-submit">登录</button>
+        <p class="msg" id="auth-msg"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- 已登录 -->
+  <section id="main-view" class="hidden">
+    <section class="help card">
+      <h2>如何申请限时播放链接并用 VLC 播放</h2>
+      <ol>
+        <li>在下方媒体列表点击 <b>申请链接</b>，选择有效期（默认 30 分钟）</li>
+        <li>复制生成的链接，打开 VLC → <b>媒体</b> → <b>打开网络串流</b>（Ctrl+N）粘贴</li>
+        <li>链接到期后自动失效，需重新申请；也可在「我的链接」中随时撤销</li>
+      </ol>
+    </section>
+
+    <div class="section-head">
+      <h2>资源列表</h2>
+      <button class="btn ghost" id="btn-refresh">⟳ 刷新</button>
+    </div>
+    <div class="video-grid" id="video-grid"><div class="empty">加载中…</div></div>
+
+    <div class="section-head"><h2>我的限时链接</h2></div>
+    <div id="link-list"><div class="empty">暂无链接，申请后显示在这里</div></div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+<div id="preview-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="preview-title">预览</span>
+      <button class="btn ghost" id="preview-close">✕</button>
+    </div>
+    <video id="preview-video" controls autoplay></video>
+    <audio id="preview-audio" controls autoplay></audio>
+  </div>
+</div>
+
+<script src="/client/app.js"></script>
+</body>
+</html>
