@@ -26,6 +26,7 @@ class Store:
         self._lock = threading.Lock()
         self._last_cleanup = 0.0
         self._db = None
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.load()
 
     # ---------- persistence ----------
@@ -76,11 +77,44 @@ class Store:
 
     # ---------- admin ----------
     def ensure_admin(self, username, password):
+        """Create the admin record on first run only. Password changes on
+        later runs are ignored unless apply_admin_credentials is called."""
         with self._lock:
             if not self._db["admin"]:
                 from .auth import hash_password
                 self._db["admin"] = {"username": username, "pw_hash": hash_password(password)}
                 self._save()
+                return True
+            return False
+
+    def apply_admin_credentials(self, username, password):
+        """Explicitly set the admin username/password (e.g. when the operator
+        passes --admin-user/--admin-pass). Returns True if anything changed."""
+        from .auth import hash_password, verify_password
+        with self._lock:
+            adm = self._db["admin"]
+            if not adm:
+                self._db["admin"] = {"username": username, "pw_hash": hash_password(password)}
+                self._save()
+                return True
+            changed = False
+            if adm["username"] != username:
+                adm["username"] = username
+                changed = True
+            try:
+                same = verify_password(adm["pw_hash"], password)
+            except Exception:
+                same = False
+            if not same:
+                adm["pw_hash"] = hash_password(password)
+                changed = True
+            if changed:
+                self._save()
+            return changed
+
+    def get_admin_username(self):
+        with self._lock:
+            return (self._db["admin"] or {}).get("username")
 
     def verify_admin(self, username, password):
         with self._lock:

@@ -31,8 +31,11 @@ def main():
                         help="try to stop Windows SSDPSRV service (admin required). "
                              "Enables same-host VLC discovery but breaks Windows UPnP "
                              "clients like AIMP. Default: keep SSDPSRV for AIMP support.")
-    parser.add_argument("--admin-user", default="admin", help="admin username (first run only)")
-    parser.add_argument("--admin-pass", default="admin123", help="admin password (first run only)")
+    parser.add_argument("--admin-user", default="admin", help="admin username")
+    parser.add_argument("--admin-pass", default=None,
+                        help="admin password. Sets the password on first run; "
+                             "on later runs, updates the stored password. "
+                             "Default when omitted: admin123 (first run only)")
     args = parser.parse_args()
 
     base = os.path.dirname(os.path.abspath(__file__))
@@ -48,7 +51,14 @@ def main():
 
     httpd = StreamingServer((args.host, args.port), Handler, source_dir, hls_dir,
                             static_dir, client_dir, data_dir)
-    httpd.store.ensure_admin(args.admin_user, args.admin_pass)
+    if args.admin_pass is not None:
+        changed = httpd.store.apply_admin_credentials(args.admin_user, args.admin_pass)
+        if changed:
+            print("  [admin] credentials set for account '%s'" % args.admin_user)
+    else:
+        created = httpd.store.ensure_admin(args.admin_user, "admin123")
+        if created:
+            print("  [admin] account '%s' created with DEFAULT password admin123" % args.admin_user)
 
     host = args.host if args.host not in ("0.0.0.0", "::") else "localhost"
     print("=" * 62)
@@ -57,9 +67,7 @@ def main():
     print("  Admin console   : http://%s:%d/admin" % (host, httpd.server_port))
     print("  Media streaming : http://%s:%d/play/<id>?token=<限时链接>" % (host, httpd.server_port))
     print("  Source dir      : %s" % source_dir)
-    print("  Admin account   : %s (created on first run)" % args.admin_user)
-    if args.admin_pass == "admin123":
-        print("  WARNING: default admin password in use, change it via --admin-pass on first run")
+    print("  Admin account   : %s" % (httpd.store.get_admin_username() or args.admin_user))
     print("  HLS live mode   : %s" % ("enabled (ffmpeg)" if httpd.hls.ffmpeg else "disabled (ffmpeg not found)"))
     print("  VLC: 媒体 -> 打开网络串流 -> 粘贴限时链接")
     print("=" * 62)
