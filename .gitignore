@@ -4,15 +4,8 @@ data/
 # HLS 输出
 hls/
 
-# 生成的模拟视频源
-source/*.avi
-source/*.wav
-source/*.mp4
-source/*.mkv
-source/*.flac
-source/*.dsf
-source/*.dff
-source/*.dsd
+# 媒体源目录（用户自建内容，不入库）
+source/
 
 # Python
 __pycache__/
