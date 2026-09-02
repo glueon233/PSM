@@ -144,6 +144,162 @@ def write_wav(path, freq=440.0, seconds=5, rate=44100):
         w.writeframes(bytes(frames))
 
 
+def flac_crc8(data):
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def flac_crc16(data):
+    crc = 0
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x8005) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def utf8_encode_number(n):
+    if n < 0x80:
+        return bytes([n])
+    if n < 0x800:
+        return bytes([0xC0 | (n >> 6), 0x80 | (n & 0x3F)])
+    if n < 0x10000:
+        return bytes([0xE0 | (n >> 12), 0x80 | ((n >> 6) & 0x3F), 0x80 | (n & 0x3F)])
+    return bytes([0xF0 | (n >> 18), 0x80 | ((n >> 12) & 0x3F),
+                  0x80 | ((n >> 6) & 0x3F), 0x80 | (n & 0x3F)])
+
+
+def flac_block_header(btype, last, size):
+    return bytes([(0x80 if last else 0) | btype]) + size.to_bytes(3, "big")
+
+
+def flac_streaminfo_block(sample_rate, channels, bps, total_samples, block_size=4096):
+    min_frame = max_frame = 16
+    bits = ((block_size << 128) | (block_size << 112)
+            | (min_frame << 88) | (max_frame << 64)
+            | (sample_rate << 44) | ((channels - 1) << 41) | ((bps - 1) << 36)
+            | total_samples)
+    return bits.to_bytes(18, "big") + b"\x00" * 16
+
+
+def flac_vorbis_block(entries):
+    payload = b"StreamMedia sample generator".ljust(8, b"\x00")[:8]
+    # vendor
+    payload = struct.pack("<I", 8) + b"StreamMd" + struct.pack("<I", len(entries))
+    for k, v in entries:
+        e = ("%s=%s" % (k, v)).encode("utf-8")
+        payload += struct.pack("<I", len(e)) + e
+    return payload
+
+
+def write_flac(path, sample_rate=44100, channels=1, bps=16, seconds=10,
+               block_size=4096, tags=None):
+    """Constant-subframe FLAC encoder (pure stdlib). The DC value of each
+    block follows a sine wave, producing an audible stepped tone."""
+    total = sample_rate * seconds
+    nblocks = (total + block_size - 1) // block_size
+
+    frames = bytearray()
+    for i in range(nblocks):
+        t = (i * block_size + block_size / 2) / total
+        value = int(10000 * math.sin(2 * math.pi * 8 * t))
+        frame_no = i * block_size
+        header = ((0x3FFE << 18) | (12 << 12) | (9 << 8) | (0 << 4) | (4 << 1)
+                  ).to_bytes(4, "big") + utf8_encode_number(frame_no)
+        subframe = b"\x00" + value.to_bytes(bps // 8, "big", signed=True)
+        frames += header + bytes([flac_crc8(header)]) + subframe
+        frames += flac_crc16(subframe).to_bytes(2, "big")
+
+    with open(path, "wb") as f:
+        f.write(b"fLaC")
+        f.write(flac_block_header(0, False, 34) + flac_streaminfo_block(
+            sample_rate, channels, bps, total, block_size))
+        vc = flac_vorbis_block(list((tags or {}).items()))
+        f.write(flac_block_header(4, True, len(vc)) + vc)
+        f.write(bytes(frames))
+
+
+def dsf_data_blocks(seconds, sample_rate, channels, block_size=4096):
+    """DSD silence: alternating 0x69/0x96 patterns per block header."""
+    total_bytes = sample_rate * seconds * channels // 8
+    blocks = bytearray()
+    nblocks = (total_bytes + block_size - 1) // block_size
+    for i in range(nblocks):
+        if i % 2 == 0:
+            blocks += b"\x05\xfa"
+        else:
+            blocks += b"\xfa\x05"
+        rem = min(block_size, total_bytes - i * block_size)
+        blocks += b"\x69" * rem
+    return bytes(blocks)
+
+
+def id3v2_23(frames):
+    body = bytearray()
+    for fid, text in frames:
+        payload = b"\x03" + text.encode("utf-8")  # encoding 3 = UTF-8
+        body += fid.encode("latin1") + struct.pack(">I", len(payload)) + b"\x00\x00" + payload
+    size = len(body)
+    synchsafe = bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F,
+                       (size >> 7) & 0x7F, size & 0x7F])
+    return b"ID3\x03\x00\x00" + synchsafe + bytes(body)
+
+
+def write_dsf(path, sample_rate=2822400, channels=2, seconds=10, tags=None):
+    data = dsf_data_blocks(seconds, sample_rate, channels)
+    fmt = struct.pack("<IIIIIIQII", 1, 0, 2 if channels == 2 else 1, channels,
+                      sample_rate, 1, sample_rate * seconds, 4096, 0)
+    fmt_chunk = b"fmt " + struct.pack("<Q", len(fmt)) + fmt
+    data_chunk = b"data" + struct.pack("<Q", len(data)) + data
+    head_size = 28 + len(fmt_chunk) + len(data_chunk)
+    meta = id3v2_23(list((tags or {}).items()) + [("TIT2", "DSD64 Test")]) if tags is None else \
+        id3v2_23([("TIT2", tags.get("TITLE", "DSD64 Test")),
+                  ("TPE1", tags.get("ARTIST", "StreamMedia")),
+                  ("TALB", tags.get("ALBUM", "Test Samples")),
+                  ("TCON", tags.get("GENRE", "Test"))])
+    file_size = head_size + len(meta)
+    with open(path, "wb") as f:
+        f.write(b"DSD ")
+        f.write(struct.pack("<Q", file_size - 12))
+        f.write(struct.pack("<Q", file_size))
+        f.write(struct.pack("<Q", head_size))
+        f.write(fmt_chunk)
+        f.write(data_chunk)
+        f.write(meta)
+
+
+def dff_dsd_data(seconds, sample_rate, channels):
+    total = sample_rate * seconds * channels // 8
+    return b"\x69" * total
+
+
+def write_dff(path, sample_rate=2822400, channels=2, seconds=10, tags=None):
+    data = dff_dsd_data(seconds, sample_rate, channels)
+    prop = (b"SND "
+            + b"FS  " + struct.pack(">Q", 4) + struct.pack(">I", sample_rate)
+            + b"CHNL" + struct.pack(">Q", 2 + 4 * channels)
+            + struct.pack(">H", channels) + b"SLFT" + b"SRGT"
+            + b"CMPR" + struct.pack(">Q", 4 + 4 + 14) + b"DSD " + b"not compressed\x00")
+    fver = b"FVER" + struct.pack(">Q", 4) + struct.pack(">I", 0x01050000)
+    prop_chunk = b"PROP" + struct.pack(">Q", len(prop)) + prop
+    dsd_chunk = b"DSD " + struct.pack(">Q", len(data)) + data
+    body = (b"FRM8" + struct.pack(">Q", 0) + b"DSD " + fver + prop_chunk + dsd_chunk)
+    meta = id3v2_23([("TIT2", tags.get("TITLE", "DSD64 Test") if tags else "DSD64 Test"),
+                     ("TPE1", tags.get("ARTIST", "StreamMedia") if tags else "StreamMedia"),
+                     ("TALB", tags.get("ALBUM", "Test Samples") if tags else "Test Samples"),
+                     ("TCON", tags.get("GENRE", "Test") if tags else "Test")])
+    total_size = len(body) - 12 + len(meta)
+    with open(path, "wb") as f:
+        f.write(body[:4])
+        f.write(struct.pack(">Q", total_size))
+        f.write(body[12:])
+        f.write(meta)
+
+
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     paths = [
@@ -156,6 +312,20 @@ def main():
     wav_path = os.path.join(OUT_DIR, "sample_03_tone_440.wav")
     write_wav(wav_path)
     print("generated: %s (%.1f MB)" % (wav_path, os.path.getsize(wav_path) / 1e6))
+
+    flac_tags = {"TITLE": "Stepped Sine Test", "ARTIST": "StreamMedia",
+                 "ALBUM": "Test Samples", "GENRE": "Test", "DATE": "2026"}
+    flac_path = os.path.join(OUT_DIR, "sample_04_hi_res.flac")
+    write_flac(flac_path, sample_rate=96000, channels=1, bps=16, seconds=10, tags=flac_tags)
+    print("generated: %s (%.1f MB)" % (flac_path, os.path.getsize(flac_path) / 1e6))
+
+    dsf_path = os.path.join(OUT_DIR, "sample_05_dsd64.dsf")
+    write_dsf(dsf_path, tags={"TITLE": "DSD64 Silence Test"})
+    print("generated: %s (%.1f MB)" % (dsf_path, os.path.getsize(dsf_path) / 1e6))
+
+    dff_path = os.path.join(OUT_DIR, "sample_06_dsd64.dff")
+    write_dff(dff_path, tags={"TITLE": "DSD64 DFF Test"})
+    print("generated: %s (%.1f MB)" % (dff_path, os.path.getsize(dff_path) / 1e6))
 
 
 if __name__ == "__main__":

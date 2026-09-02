@@ -21,6 +21,12 @@ MIME_TYPES = {
     ".aac": "audio/aac",
     ".ogg": "audio/ogg",
     ".m4a": "audio/mp4",
+    ".dsf": "audio/x-dsf",
+    ".dff": "audio/x-dff",
+    ".dsd": "audio/dsd",
+    ".wv": "audio/x-wavpack",
+    ".ape": "audio/x-ape",
+    ".opus": "audio/opus",
 }
 
 MEDIA_EXTS = tuple(sorted(MIME_TYPES.keys()))

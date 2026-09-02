@@ -27,8 +27,10 @@ def main():
     parser.add_argument("--data-dir", default="data", help="user/link database directory")
     parser.add_argument("--device-name", default="StreamMedia", help="DLNA device friendly name")
     parser.add_argument("--no-dlna", action="store_true", help="disable DLNA/UPnP")
-    parser.add_argument("--dlna-no-auto-fix", action="store_true",
-                        help="do not try to stop Windows SSDPSRV service (DLNA discovery may fail)")
+    parser.add_argument("--dlna-auto-fix-ssdp", action="store_true",
+                        help="try to stop Windows SSDPSRV service (admin required). "
+                             "Enables same-host VLC discovery but breaks Windows UPnP "
+                             "clients like AIMP. Default: keep SSDPSRV for AIMP support.")
     parser.add_argument("--admin-user", default="admin", help="admin username (first run only)")
     parser.add_argument("--admin-pass", default="admin123", help="admin password (first run only)")
     args = parser.parse_args()
@@ -66,10 +68,10 @@ def main():
         uuid_path = os.path.join(base, ".dlna_uuid")
         dlna = DlnaServer(args.host, httpd.server_port, source_dir,
                           friendly_name=args.device_name, uuid_path=uuid_path,
-                          auto_fix_ssdp=not args.dlna_no_auto_fix)
+                          auto_fix_ssdp=args.dlna_auto_fix_ssdp)
         httpd.dlna = dlna
         dlna.start()
-        print("  DLNA: device '%s' (VLC: 本地网络 -> Universal Plug'n'Play)" % args.device_name)
+        print("  DLNA: device '%s' (AIMP: 音乐库 -> DLNA; VLC: 本地网络)" % args.device_name)
         print("=" * 62)
 
     try:

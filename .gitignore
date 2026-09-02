@@ -9,6 +9,10 @@ source/*.avi
 source/*.wav
 source/*.mp4
 source/*.mkv
+source/*.flac
+source/*.dsf
+source/*.dff
+source/*.dsd
 
 # Python
 __pycache__/

@@ -7,6 +7,7 @@ from .util import MEDIA_EXTS, safe_join
 
 
 def scan_library(source_dir):
+    from .tags import read_tags_for
     items = []
     for dirpath, _dirnames, filenames in os.walk(source_dir):
         for name in filenames:
@@ -24,6 +25,10 @@ def scan_library(source_dir):
                 "codec": info.get("codec", "unknown"),
                 "width": info.get("width"),
                 "height": info.get("height"),
+                "bitrate": info.get("bitrate"),
+                "sample_rate": info.get("sample_rate"),
+                "channels": info.get("channels"),
+                "tags": read_tags_for(full),
             })
     items.sort(key=lambda i: i["name"].lower())
     return items
@@ -38,9 +43,62 @@ def probe(path):
             return _probe_avi(path)
         if ext in (".mp4", ".m4v", ".mov"):
             return _probe_mp4(path)
+        if ext == ".flac":
+            return _probe_flac(path)
+        if ext == ".dsf":
+            return _probe_dsf(path)
+        if ext == ".dff":
+            return _probe_dff(path)
     except Exception:
         pass
     return {}
+
+
+def _probe_flac(path):
+    from .tags import read_flac_info
+    info, _tags = read_flac_info(path)
+    if not info:
+        return {}
+    out = {"codec": "FLAC %dbit/%dkHz" % (info["bits"], info["sample_rate"] // 1000),
+           "sample_rate": info["sample_rate"], "channels": info["channels"],
+           "bits": info["bits"]}
+    total = info.get("total_samples", 0)
+    if info["sample_rate"] and total:
+        out["duration"] = total / info["sample_rate"]
+    try:
+        if out.get("duration"):
+            out["bitrate"] = int(os.path.getsize(path) * 8 / out["duration"])
+    except OSError:
+        pass
+    return out
+
+
+def _probe_dsf(path):
+    from .tags import read_dsf_info
+    info, _tags = read_dsf_info(path)
+    if not info:
+        return {}
+    out = {"codec": info.get("codec", "DSD"),
+           "sample_rate": info.get("sample_rate"), "channels": info.get("channels"),
+           "bits": 1}
+    if info.get("duration"):
+        out["duration"] = info["duration"]
+        out["bitrate"] = int(info["sample_rate"] * info["channels"])
+    return out
+
+
+def _probe_dff(path):
+    from .tags import read_dff_info
+    info, _tags = read_dff_info(path)
+    if not info:
+        return {}
+    out = {"codec": info.get("codec", "DSD"),
+           "sample_rate": info.get("sample_rate"), "channels": info.get("channels"),
+           "bits": 1}
+    if info.get("duration"):
+        out["duration"] = info["duration"]
+        out["bitrate"] = int(info["sample_rate"] * info["channels"])
+    return out
 
 
 def _probe_wav(path):

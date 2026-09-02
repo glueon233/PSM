@@ -46,11 +46,11 @@ python server.py --port 8000 --admin-user admin --admin-pass 你的管理员密�
 2. 展开设备 `StreamMedia`，浏览目录并双击播放
 3. 或在 VLC 播放地址栏直接输入 `upnp://uuid:设备UUID`（UUID 见管理页面）
 
-> **Windows 注意**：Windows 自带 SSDP 服务（SSDPSRV）会独占 1900 多播端口，
-> 导致 DLNA 发现失败。以管理员身份运行服务器时会自动停止该服务；
-> 否则请手动执行 `net stop SSDPSRV`（恢复：`net start SSDPSRV`）。
-> 局域网内其他设备（电视/手机）不受影响；同机运行的 VLC 与服务器争用多播端口，
-> 可能发现不了设备，属 Windows 平台限制，此时请用下方「打开网络串流」方式播放。
+> **Windows 注意**：默认保留 Windows SSDP 服务（SSDPSRV）运行，由其缓存我们的
+> NOTIFY 通告并代表我们响应 M-SEARCH——AIMP/WMP 等 Windows UPnP 客户端可正常发现。
+> 局域网内其他设备（电视/手机）不受影响。同机运行的 VLC 自带 SSDP 栈，与
+> SSDPSRV 争用 1900 多播端口可能发现不了设备（Windows 平台限制），此时可用
+> `--dlna-auto-fix-ssdp` 停掉 SSDPSRV（需管理员），或改用下方「打开网络串流」方式播放。
 
 ## VLC 播放（打开网络串流）
 
@@ -153,15 +153,35 @@ python server.py --host 0.0.0.0 --port 8000 --source source --hls-dir hls \
 | `--source` / `--hls-dir` | 媒体源目录 / HLS 输出目录 |
 | `--data-dir` | 用户与链接数据库目录 |
 | `--admin-user` / `--admin-pass` | 管理员账号（首次运行创建，之后以数据库为准） |
-| `--device-name` | DLNA 设备友好名称（电视上显示的名字） |
+| `--device-name` | DLNA 设备友好名称（电视/AIMP 上显示的名字） |
 | `--no-dlna` | 禁用 DLNA/UPnP |
-| `--dlna-no-auto-fix` | 不自动停止 Windows SSDPSRV 服务 |
+| `--dlna-auto-fix-ssdp` | 停止 Windows SSDPSRV 服务（需管理员），启用同机 VLC 发现；但 AIMP 将无法发现服务器。默认保留 SSDPSRV 以支持 AIMP |
 
 ## 支持的媒体格式
 
 | 类型 | 扩展名 |
 | --- | --- |
 | 视频 | `.mp4 .m4v .mkv .webm .avi .mov .flv .wmv .ts` |
-| 音频 | `.mp3 .wav .flac .aac .ogg .m4a` |
+| 无损/高保真音频 | `.flac .wav .dsf .dff .dsd .wv .ape` |
+| 有损音频 | `.mp3 .aac .ogg .opus .m4a` |
 
-> 提示：`source/` 目录支持子文件夹；放入新文件后在管理页面点「刷新」即可看到。
+> 高保真支持：FLAC（含 Vorbis Comments 标签）、DSD（DSF/DFF，DSD64-512，含 ID3v2 标签）。
+> 服务器自动解析采样率/码率/声道/时长并写入 DIDL（`bitrate`、`sampleFrequency`、
+> `nrAudioChannels`、`upnp:artist/album/genre`），AIMP 等客户端可显示完整元数据。
+
+## AIMP 播放（DLNA 客户端）
+
+[AIMP](https://www.aimp.ru/) + [aimp_dlna 插件](https://github.com/ArtemIzmaylov/aimp_dlna)：
+
+1. 确保 Windows SSDP 服务（SSDPSRV）正在运行（默认不动它，启动日志会提示状态）
+2. AIMP → 音乐库 → **DLNA** → 展开 `StreamMedia` → 双击曲目播放
+3. FLAC/DSD 原样传输（不转码），由 AIMP 解码输出
+
+> aimp_dlna 使用 Windows UPnP 框架（UPNPLib）：发现依赖 SSDPSRV 缓存我们的
+> NOTIFY 通告；浏览调用 `BrowseDirectChildren`；按 URL 扩展名过滤可播放文件。
+> 本服务器已按该插件行为适配（URL 以扩展名结尾、DIDL 提供 size/bitrate/duration
+> 及 upnp:artist/album/genre 等字段）。
+
+> **Windows 说明**：默认**保留 SSDPSRV 运行**以支持 AIMP/WMP。
+> 如需同机 VLC 发现（VLC 自带 SSDP 栈与 SSDPSRV 冲突），用
+> `--dlna-auto-fix-ssdp`（需管理员）停止 SSDPSRV；此时 AIMP 插件将无法发现服务器。

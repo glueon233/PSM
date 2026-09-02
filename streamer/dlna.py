@@ -29,7 +29,8 @@ SERVICE_CMS = "urn:schemas-upnp-org:service:ConnectionManager:1"
 
 DLNA_FLAGS = "01700000000000000000000000000000"
 
-AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a"}
+AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
+              ".dsf", ".dff", ".dsd", ".wv", ".ape", ".opus"}
 PN_MAP = {
     ".mp4": "MP4", ".m4v": "MP4", ".avi": "AVI",
     ".mkv": "MATROSKA", ".mp3": "MP3",
@@ -83,18 +84,33 @@ class DlnaServer:
             return False
 
     def _prepare_windows_ssdp(self):
-        """On Windows the built-in SSDP service swallows multicast packets on
-        port 1900, making discovery impossible. Try to stop it (needs admin)."""
-        if not self.auto_fix_ssdp or not self._ssdpsrv_running():
+        """On Windows, the built-in SSDP service (SSDPSRV) owns multicast
+        delivery on port 1900. Two coexistence strategies exist:
+
+        * SSDPSRV running: it caches our NOTIFY announcements and answers
+          M-SEARCH on our behalf. Windows UPnP clients (AIMP plugin, WMP)
+          can discover us; clients using their own SSDP stack (VLC) may not.
+        * SSDPSRV stopped: direct SSDP clients (VLC, TVs, phones) work,
+          but Windows UPnP based clients (AIMP plugin) lose discovery.
+
+        Default: leave SSDPSRV alone. Only stop it when explicitly enabled
+        with auto_fix_ssdp (requires admin).
+        """
+        if os.name != "nt" or not self._ssdpsrv_running():
             return
-        print("[dlna] Windows SSDP service (SSDPSRV) is running and blocks DLNA discovery")
+        if not self.auto_fix_ssdp:
+            print("[dlna] Windows SSDP service (SSDPSRV) is running: our NOTIFY announcements")
+            print("[dlna] will be cached by Windows. AIMP/WMP can discover the server.")
+            print("[dlna] Same-host VLC discovery may not work in this mode (platform limitation).")
+            return
+        print("[dlna] trying to stop SSDPSRV for direct SSDP clients (VLC) ...")
         rc = subprocess.call(["net", "stop", "SSDPSRV"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if rc == 0:
             print("[dlna] stopped SSDPSRV (restore with: net start SSDPSRV)")
         else:
             print("[dlna] WARNING: cannot stop SSDPSRV (administrator required)")
-            print("[dlna] WARNING: DLNA discovery will not work until SSDPSRV is stopped")
+            print("[dlna] WARNING: same-host VLC discovery may not work")
             print("[dlna] Fix: run this program as administrator, or execute: net stop SSDPSRV")
 
     # ---------- identity ----------
@@ -556,6 +572,12 @@ class DlnaServer:
                 "http-get:*:audio/flac:*",
                 "http-get:*:audio/aac:*",
                 "http-get:*:audio/ogg:*",
+                "http-get:*:audio/x-dsf:*",
+                "http-get:*:audio/x-dff:*",
+                "http-get:*:audio/dsd:*",
+                "http-get:*:audio/x-wavpack:*",
+                "http-get:*:audio/x-ape:*",
+                "http-get:*:audio/opus:*",
             ]
             return 200, "text/xml", self._soap_response(SERVICE_CMS, action, {
                 "Source": ",".join(protos), "Sink": ""})
@@ -609,19 +631,27 @@ class DlnaServer:
     def _item_entry(self, rel, name):
         full = os.path.join(self.source_dir, rel)
         ext = os.path.splitext(name)[1].lower()
-        cls = "object.item.audioItem.musicTrack" if ext in AUDIO_EXTS else "object.item.videoItem"
+        is_audio = ext in AUDIO_EXTS
+        cls = "object.item.audioItem.musicTrack" if is_audio else "object.item.videoItem"
         from .library import probe
+        from .tags import read_tags_for
         info = probe(full)
-        res_attrs = []
         if info.get("size") is None:
             try:
                 info["size"] = os.path.getsize(full)
             except OSError:
                 pass
+        res_attrs = []
         if info.get("size"):
             res_attrs.append('size="%d"' % info["size"])
         if info.get("duration"):
             res_attrs.append('duration="%s"' % self._fmt_duration(info["duration"]))
+        if info.get("bitrate"):
+            res_attrs.append('bitrate="%d"' % info["bitrate"])
+        if info.get("sample_rate"):
+            res_attrs.append('sampleFrequency="%d"' % info["sample_rate"])
+        if info.get("channels"):
+            res_attrs.append('nrAudioChannels="%d"' % info["channels"])
         pn = PN_MAP.get(ext)
         if pn:
             pi = "http-get:*:%s:DLNA.ORG_PN=%s;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=%s" % (
@@ -630,15 +660,26 @@ class DlnaServer:
             pi = "http-get:*:%s:*" % guess_mime(full)
         url = "http://%s:%d/MediaItems/%s" % (self.advertise_ip, self.port, quote_relpath(rel))
         parent = "0" if os.sep not in rel else "C:" + os.path.dirname(rel).replace(os.sep, "/")
+        meta = ""
+        title = name
+        if is_audio:
+            tags = read_tags_for(full)
+            if tags.get("title"):
+                title = tags["title"]
+            for key, tag in (("artist", "upnp:artist"), ("album", "upnp:album"),
+                             ("genre", "upnp:genre"), ("year", "upnp:year")):
+                if tags.get(key):
+                    meta += "<%s>%s</%s>" % (tag, xml_escape(tags[key]), tag)
         return ('<item id="I:%s" parentID="%s" restricted="1">'
                 "<dc:title>%s</dc:title>"
-                '<upnp:class>%s</upnp:class>'
+                '<upnp:class>%s</upnp:class>%s'
                 '<res protocolInfo="%s" %s>%s</res>'
                 "</item>") % (
             xml_escape(rel.replace(os.sep, "/")),
             xml_escape(parent),
-            xml_escape(name),
+            xml_escape(title),
             cls,
+            meta,
             xml_escape(pi),
             " ".join(res_attrs),
             xml_escape(url))
