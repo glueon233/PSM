@@ -170,7 +170,7 @@ async function requestLink(id, btn) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ media_id: id, ttl }),
     });
-    localStorage.setItem("linktok_" + r.id, JSON.stringify({ media: r.media, token: r.token }));
+    localStorage.setItem("linktok_" + r.id, JSON.stringify({ media: r.media, token: r.token, kind: "media" }));
     const fullUrl = location.origin + r.url;
     copyText(fullUrl, "链接已生成并复制，有效期至 " + fmtClock(r.expires));
     loadLinks();
@@ -224,9 +224,8 @@ async function loadLinks() {
     return;
   }
   list.innerHTML = items.map((l) => `
-    <div class="link-item" data-id="${l.id}" data-expires="${l.expires}">
-      <span class="lmedia">${escapeHtml(l.media)}</span>
-      <span class="lurl">${location.origin}/play/${encodePath(l.media)}?token=…</span>
+    <div class="link-item" data-id="${l.id}" data-expires="${l.expires}" data-kind="${l.kind}">
+      <span class="lmedia">${l.kind === "live" ? '<span class="live-badge"><span class="dot"></span>LIVE</span> ' : ""}${escapeHtml(l.target || l.media)}</span>
       <span class="lexp" id="exp-${l.id}"></span>
       <button class="btn small" data-copy-link="${l.id}">复制完整链接</button>
       <button class="btn small danger" data-revoke="${l.id}">撤销</button>
@@ -245,7 +244,8 @@ async function copyFullLink(id) {
   if (saved) {
     try {
       const s = JSON.parse(saved);
-      copyText(`${location.origin}/play/${encodePath(s.media)}?token=${s.token}`);
+      const path = s.kind === "live" ? "/live/" : "/play/";
+      copyText(`${location.origin}${path}${encodePath(s.media)}?token=${s.token}`);
       return;
     } catch {}
   }
@@ -253,12 +253,13 @@ async function copyFullLink(id) {
     const { items } = await api("/api/links");
     const l = items.find((x) => x.id === id);
     if (!l) return;
+    const body = l.kind === "live" ? { live_id: l.target, ttl: 600 } : { media_id: l.target, ttl: 600 };
     const r = await api("/api/links", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ media_id: l.media, ttl: 600 }),
+      body: JSON.stringify(body),
     });
-    localStorage.setItem("linktok_" + r.id, JSON.stringify({ media: r.media, token: r.token }));
+    localStorage.setItem("linktok_" + r.id, JSON.stringify({ media: r.media, token: r.token, kind: r.kind }));
     copyText(`${location.origin}${r.url}`, "已重新生成链接并复制");
     loadLinks();
   } catch (e) {
@@ -295,6 +296,124 @@ function tickCountdown() {
   });
 }
 
+/* ---------- live publish (HTTP-TS ingest) ---------- */
+let publishUrlCache = "";
+
+async function getStreamKey() {
+  const sid = $("#pub-stream-id").value.trim();
+  if (!/^[A-Za-z0-9_\-]{3,64}$/.test(sid)) {
+    toast("流名称需 3-64 位，仅限字母/数字/_-");
+    return;
+  }
+  const ttl = parseInt($("#pub-ttl").value, 10);
+  try {
+    const r = await api("/api/stream-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stream_id: sid, ttl }),
+    });
+    publishUrlCache = location.origin + r.url;
+    $("#publish-url").textContent = publishUrlCache;
+    $("#ffmpeg-cmd").textContent =
+      `ffmpeg -re -i 输入源 -c copy -f mpegts "${publishUrlCache}"`;
+    $("#publish-expires").textContent = fmtClock(r.expires);
+    $("#publish-result").classList.remove("hidden");
+    localStorage.setItem("streamkey_" + r.id, JSON.stringify({ stream_id: sid, key: r.key }));
+    toast("推流密钥已生成，有效期至 " + fmtClock(r.expires));
+    loadKeys();
+  } catch (e) {
+    toast("获取失败: " + e.message);
+  }
+}
+
+async function loadKeys() {
+  const { items } = await api("/api/stream-keys");
+  const list = $("#key-list");
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">暂无密钥，获取后显示在这里</div>';
+    return;
+  }
+  list.innerHTML = items.map((k) => `
+    <div class="stream-item" data-id="${k.id}">
+      <span class="sname">${escapeHtml(k.stream_id)}</span>
+      <span class="lexp muted">至 ${fmtClock(k.expires)}</span>
+      <button class="btn small" data-copy-key="${k.id}">复制推流地址</button>
+      <button class="btn small danger" data-revoke-key="${k.id}">撤销</button>
+    </div>`).join("");
+  list.querySelectorAll("[data-copy-key]").forEach((b) =>
+    b.addEventListener("click", () => copyStreamKey(b.dataset.copyKey)));
+  list.querySelectorAll("[data-revoke-key]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      await api(`/api/stream-keys/${b.dataset.revokeKey}`, { method: "DELETE" });
+      toast("密钥已撤销");
+      loadKeys();
+    }));
+}
+
+async function copyStreamKey(id) {
+  const saved = localStorage.getItem("streamkey_" + id);
+  let url = "";
+  if (saved) {
+    try {
+      const s = JSON.parse(saved);
+      url = `${location.origin}/ingest/${encodePath(s.stream_id)}?key=${s.key}`;
+    } catch {}
+  }
+  if (!url) {
+    try {
+      const { items } = await api("/api/stream-keys");
+      const k = items.find((x) => x.id === id);
+      if (!k) return;
+      const r = await api("/api/stream-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stream_id: k.stream_id, ttl: 600 }),
+      });
+      localStorage.setItem("streamkey_" + r.id, JSON.stringify({ stream_id: r.stream_id, key: r.key }));
+      url = location.origin + r.url;
+    } catch (e) {
+      toast("复制失败: " + e.message);
+      return;
+    }
+  }
+  copyText(url, "推流地址已复制");
+}
+
+/* ---------- live hall ---------- */
+async function loadLive() {
+  const { items } = await api("/api/live");
+  $("#live-count").textContent = items.length ? `（${items.length} 场）` : "";
+  const list = $("#live-list");
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">暂无在线直播</div>';
+    return;
+  }
+  list.innerHTML = items.map((l) => `
+    <div class="live-item">
+      <span class="lname">${escapeHtml(l.id)}</span>
+      <span class="live-badge"><span class="dot"></span>LIVE</span>
+      <span class="lexp muted">推流者 ${escapeHtml(l.publisher)} · ${l.viewers} 人观看 · ${fmtDuration(Date.now() / 1000 - l.started)}</span>
+      <button class="btn primary small" data-watch="${encodePath(l.id)}">申请观看链接</button>
+    </div>`).join("");
+  list.querySelectorAll("[data-watch]").forEach((b) =>
+    b.addEventListener("click", () => requestWatchLink(b.dataset.watch)));
+}
+
+async function requestWatchLink(liveId) {
+  try {
+    const r = await api("/api/links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ live_id: liveId, ttl: 1800 }),
+    });
+    localStorage.setItem("linktok_" + r.id, JSON.stringify({ media: r.media, token: r.token, kind: "live" }));
+    copyText(location.origin + r.url, "观看链接已复制（VLC 打开网络串流），有效期至 " + fmtClock(r.expires));
+    loadLinks();
+  } catch (e) {
+    toast("申请失败: " + e.message);
+  }
+}
+
 /* ---------- boot ---------- */
 async function boot() {
   try {
@@ -305,9 +424,10 @@ async function boot() {
       $("#user-pills").style.display = "";
       $("#auth-view").classList.add("hidden");
       $("#main-view").classList.remove("hidden");
-      await Promise.all([loadVideos(), loadLinks()]);
+      await Promise.all([loadVideos(), loadLinks(), loadKeys(), loadLive()]);
       setInterval(tickCountdown, 1000);
       setInterval(loadLinks, 30000);
+      setInterval(loadLive, 5000);
       return;
     }
   } catch {}
@@ -320,6 +440,8 @@ $$(".auth-tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dat
 $("#auth-form").addEventListener("submit", submitAuth);
 $("#btn-logout").addEventListener("click", logout);
 $("#btn-refresh").addEventListener("click", loadVideos);
+$("#btn-get-key").addEventListener("click", getStreamKey);
+$("#btn-copy-publish").addEventListener("click", () => publishUrlCache && copyText(publishUrlCache, "推流地址已复制"));
 $("#preview-close").addEventListener("click", closePreview);
 $("#preview-modal").addEventListener("click", (e) => {
   if (e.target === $("#preview-modal")) closePreview();

@@ -84,9 +84,10 @@ python server.py --port 8000 --admin-user admin --admin-pass 你的管理员密�
 
 | 功能 | 说明 |
 | --- | --- |
-| 客户端门户 | `/client/` 注册（待审批）/登录/资源预览/申请限时链接/撤销 |
+| 客户端门户 | `/client/` 注册（待审批）/登录/资源预览/申请限时链接/推流密钥/直播大厅 |
 | 白名单审批 | `/admin` 控制台：审批注册申请、移出白名单、查看全部链接 |
 | 限时链接 | `/play/<id>?token=…`，10 分钟-2 小时可配，到期失效，可直接粘贴 VLC |
+| HTTP-TS 推流 | MPEG-TS over HTTP POST 多用户鉴权推流，chunked TS 直播转发 |
 | 密码安全 | Argon2id 哈希（argon2-cffi），登录会话 HttpOnly Cookie，token 存 SHA-256 |
 | 直连串流 | Range/206 支持，多客户端并发，VLC 拖动进度条 |
 | DLNA/UPnP | SSDP 发现、ContentDirectory Browse、ConnectionManager，电视/手机直接浏览 |
@@ -108,9 +109,16 @@ python server.py --port 8000 --admin-user admin --admin-pass 你的管理员密�
 | POST | `/api/admin/users/<u>/approve` | 批准注册 | 管理员 |
 | POST | `/api/admin/users/<u>/reject` | 拒绝注册 | 管理员 |
 | DELETE | `/api/admin/users/<u>` | 移出白名单 | 管理员 |
-| POST | `/api/links` | 申请限时链接 `{media_id, ttl}` | 客户端/管理员 |
+| POST | `/api/links` | 申请限时链接 `{media_id, ttl}` 或 `{live_id, ttl}` | 客户端/管理员 |
 | GET | `/api/links` | 我的有效链接 | 客户端/管理员 |
 | DELETE | `/api/links/<id>` | 撤销链接 | 所有者/管理员 |
+| POST | `/api/stream-keys` | 申请推流密钥 `{stream_id, ttl}` | 客户端/管理员 |
+| GET | `/api/stream-keys` | 我的推流密钥 | 客户端/管理员 |
+| DELETE | `/api/stream-keys/<id>` | 撤销推流密钥 | 所有者/管理员 |
+| GET | `/api/live` | 在线直播列表 | 客户端/管理员 |
+| POST | `/ingest/<id>?key=…` | HTTP-TS 推流入口 | 有效密钥 |
+| GET | `/live/<id>?token=…` | 直播流（chunked TS） | token/管理员 |
+| POST | `/api/admin/live/<id>/kick` | 踢出推流端 | 管理员 |
 | GET | `/api/admin/links` | 全部有效链接 | 管理员 |
 | GET | `/api/videos` | 媒体源列表 | 客户端/管理员 |
 | GET | `/api/status` | 服务器状态 | 公开 |
@@ -168,6 +176,38 @@ python server.py --host 0.0.0.0 --port 8000 --source source --hls-dir hls \
 > 高保真支持：FLAC（含 Vorbis Comments 标签）、DSD（DSF/DFF，DSD64-512，含 ID3v2 标签）。
 > 服务器自动解析采样率/码率/声道/时长并写入 DIDL（`bitrate`、`sampleFrequency`、
 > `nrAudioChannels`、`upnp:artist/album/genre`），AIMP 等客户端可显示完整元数据。
+
+## 直播推流（HTTP-TS / MPEG-TS over HTTP POST）
+
+服务器通过 **HTTP-TS** 协议接收多用户推流：推流端把连续的 MPEG-TS 字节流
+POST 到服务器，服务器实时转发给凭限时链接观看的观众（VLC 网络串流）。
+
+### 协议与鉴权流程
+
+```
+白名单用户 --POST /api/stream-keys {stream_id, ttl}--> 限时推流密钥(哈希存储)
+推流端 -----POST /ingest/<stream_id>?key=<密钥>----------> 服务器(TS环形缓冲, 以最近PAT/关键帧为接入点)
+观众 --------POST /api/links {live_id, ttl}-------------> 限时观看链接
+观众 --------GET /live/<stream_id>?token=<观看链接>-------> chunked MPEG-TS 实时流(VLC 直接播放)
+```
+
+| 特性 | 说明 |
+| --- | --- |
+| 多用户鉴权 | 推流密钥与观看链接均为**限时 token**（60s-6h），服务端只存 SHA-256 |
+| 占用保护 | 同一流名同时只允许一个推流端；密钥绑定流名与用户 |
+| 流式缓冲 | 188 字节 TS 包环形缓冲（1.5MB / 20s），支持 chunked/裸流两种 POST |
+| 快速接入 | 观众从中途加入时，从缓冲内最近 PAT/随机访问点开始输出 |
+| 管理 | 管理员可查看推流统计（速率/观众数）并**踢出**推流端（立即断连） |
+
+### 推流端示例（ffmpeg）
+
+```powershell
+ffmpeg -re -i 输入源 -c copy -f mpegts "http://服务器IP:8000/ingest/live1?key=推流密钥"
+# 转码推流：ffmpeg -re -i input -c:v libx264 -c:a aac -f mpegts "http://IP:8000/ingest/live1?key=KEY"
+```
+
+> VLC 的 access=http 输出为服务器模式，不支持 HTTP-TS POST 推流；
+> 推流请用 ffmpeg/OBS(GStreamer 输出) 等支持 HTTP 输出的工具。
 
 ## AIMP 播放（DLNA 客户端）
 

@@ -90,6 +90,7 @@ def main():
         if httpd.dlna:
             httpd.dlna.stop()
         httpd.hls.stop_all()
+        httpd.ingest.stop_all()
         httpd.server_close()
 
 

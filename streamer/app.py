@@ -3,12 +3,14 @@
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .hls import HlsManager
+from .ingest import IngestManager, STREAM_ID_RE
 from .library import probe, resolve_source, scan_library
 from .store import Store, StoreError
 from .util import guess_mime, quote_relpath
@@ -43,6 +45,7 @@ class StreamingServer(ThreadingHTTPServer):
         self.client_dir = client_dir
         self.store = Store(os.path.join(data_dir, "db.json"))
         self.hls = HlsManager(source_dir, hls_dir)
+        self.ingest = IngestManager()
         self.dlna = None
         self.start_time = time.time()
 
@@ -212,7 +215,8 @@ class Handler(BaseHTTPRequestHandler):
                 u = self._client()
                 return self._json({"user": u or None, "admin": self._admin()})
             if path == "/api/videos":
-                self._require_client()
+                if not self._admin():
+                    self._require_client()
                 return self._json({"items": scan_library(self.srv.source_dir)})
             if path == "/api/links":
                 if self._admin():
@@ -221,6 +225,15 @@ class Handler(BaseHTTPRequestHandler):
                     u = self._require_client()
                     items = self.srv.store.list_links(u["username"])
                 return self._json({"items": items})
+            if path == "/api/stream-keys":
+                u = self._require_client()
+                items = self.srv.store.list_stream_keys(
+                    None if self._admin() else u["username"])
+                return self._json({"items": items})
+            if path == "/api/live":
+                if not self._admin():
+                    self._require_client()
+                return self._json({"items": self.srv.ingest.list_online()})
             if path == "/api/admin/users":
                 self._require_admin()
                 return self._json({"items": self.srv.store.list_users()})
@@ -241,6 +254,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._play(path[len("/play/"):], parsed.query, require_auth=True)
             if path.startswith("/MediaItems/"):
                 return self._play(path[len("/MediaItems/"):], parsed.query, require_auth=False)
+            if path.startswith("/live/"):
+                return self._live(path[len("/live/"):], parsed.query)
             if path.startswith("/hls/"):
                 return self._hls_file(path[len("/hls/"):])
             if path == "/rootDesc.xml" and self.srv.dlna:
@@ -301,6 +316,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_admin_logout()
             if path == "/api/links":
                 return self._api_create_link()
+            if path == "/api/stream-keys":
+                return self._api_create_stream_key()
+            if path.startswith("/ingest/"):
+                return self._ingest(path[len("/ingest/"):], parsed.query)
+            if path.startswith("/api/admin/live/"):
+                self._require_admin()
+                parts = path[len("/api/admin/live/"):].split("/", 1)
+                sid = urllib.parse.unquote(parts[0])
+                action = parts[1] if len(parts) > 1 else None
+                if action == "kick":
+                    ok = self.srv.ingest.kick(sid)
+                    return self._json({"id": sid, "kicked": ok})
+                raise HttpError(404, "unknown action")
             if path.startswith("/api/admin/users/"):
                 self._require_admin()
                 parts = path[len("/api/admin/users/"):].split("/", 1)
@@ -382,17 +410,149 @@ class Handler(BaseHTTPRequestHandler):
             username = self._require_client()["username"]
         body = self._read_json()
         mid = str(body.get("media_id", ""))
+        live_id = str(body.get("live_id", ""))
         ttl = body.get("ttl") or 1800
-        if not resolve_source(self.srv.source_dir, mid):
-            raise HttpError(404, "媒体不存在")
-        token, expires, link_id = self.srv.store.create_link(username, mid, ttl)
+        if mid:
+            if not resolve_source(self.srv.source_dir, mid):
+                raise HttpError(404, "媒体不存在")
+            token, expires, link_id = self.srv.store.create_link(
+                username, mid, ttl, kind="media")
+            return self._json({
+                "url": "/play/%s?token=%s" % (quote_relpath(mid), token),
+                "token": token, "id": link_id, "media": mid,
+                "kind": "media", "expires": expires,
+            }, 201)
+        if live_id:
+            if not STREAM_ID_RE.match(live_id):
+                raise HttpError(400, "流名称格式非法")
+            if not self.srv.ingest.get(live_id):
+                raise HttpError(404, "直播流不存在或已下线")
+            token, expires, link_id = self.srv.store.create_link(
+                username, live_id, ttl, kind="live")
+            return self._json({
+                "url": "/live/%s?token=%s" % (quote_relpath(live_id), token),
+                "token": token, "id": link_id, "media": live_id,
+                "kind": "live", "expires": expires,
+            }, 201)
+        raise HttpError(400, "缺少 media_id 或 live_id")
+
+    def _api_create_stream_key(self):
+        if self._admin():
+            username = "admin"
+        else:
+            username = self._require_client()["username"]
+        body = self._read_json()
+        sid = str(body.get("stream_id", ""))
+        ttl = body.get("ttl") or 3600
+        if not STREAM_ID_RE.match(sid):
+            raise HttpError(400, "流名称需 3-64 位，仅限字母/数字/_-")
+        token, expires, key_id = self.srv.store.create_stream_key(username, sid, ttl)
         return self._json({
-            "url": "/play/%s?token=%s" % (quote_relpath(mid), token),
-            "token": token,
-            "id": link_id,
-            "media": mid,
-            "expires": expires,
+            "url": "/ingest/%s?key=%s" % (quote_relpath(sid), token),
+            "key": token, "id": key_id, "stream_id": sid, "expires": expires,
         }, 201)
+
+    # ---------- HTTP-TS ingest / live relay ----------
+    def _ingest(self, stream_id, query):
+        """MPEG-TS over HTTP POST. Body is a continuous 188-byte TS stream."""
+        if not STREAM_ID_RE.match(stream_id):
+            raise HttpError(400, "流名称格式非法")
+        key = urllib.parse.parse_qs(query).get("key", [None])[0]
+        owner = self.srv.store.check_stream_key(key, stream_id)
+        if not owner:
+            raise HttpError(401, "推流密钥无效或已过期")
+        st, err = self.srv.ingest.acquire(stream_id, owner)
+        if not st:
+            raise HttpError(409, err)
+        st.set_conn(self.connection)
+        chunked = "chunked" in (self.headers.get("Transfer-Encoding") or "").lower()
+        try:
+            self.connection.settimeout(60.0)
+            while not st.aborted:
+                try:
+                    chunk = next(self._body_chunks(chunked))
+                except StopIteration:
+                    break
+                except (socket.timeout, TimeoutError, BrokenPipeError,
+                        ConnectionResetError, OSError):
+                    break
+                if not chunk:
+                    break
+                st.push(chunk)
+        finally:
+            self.srv.ingest.release(stream_id)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError:
+            pass
+
+    def _body_chunks(self, chunked):
+        """Yield raw body chunks. Decodes chunked transfer-encoding when
+        the publisher uses it (VLC/ffmpeg HTTP output often does)."""
+        if chunked:
+            while True:
+                line = self.rfile.readline()
+                if not line:
+                    break
+                try:
+                    size = int(line.strip().split(b";")[0], 16)
+                except (ValueError, IndexError):
+                    break
+                if size == 0:
+                    self.rfile.readline()  # consume trailing CRLF
+                    break
+                data = self.rfile.read(size)
+                self.rfile.readline()  # consume trailing CRLF
+                yield data
+        else:
+            while True:
+                data = self.rfile.read1(65536)
+                if not data:
+                    break
+                yield data
+
+    def _live(self, stream_id, query):
+        """Chunked MPEG-TS relay for viewers (VLC network stream)."""
+        params = urllib.parse.parse_qs(query)
+        token = params.get("token", [None])[0]
+        if not self.srv.store.check_link(token, stream_id) and not self._admin():
+            raise HttpError(401, "观看链接无效或已过期，请重新申请")
+        st = self.srv.ingest.get(stream_id)
+        if not st or not st.online:
+            raise HttpError(404, "直播流不存在或已下线")
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        st.register_viewer()
+        try:
+            seq, first = st.snapshot()
+            if first:
+                self._chunk_write(first)
+            while True:
+                data, seq = st.wait_more(seq)
+                if data is None:
+                    self._chunk_write(b"")
+                    break
+                if data:
+                    self._chunk_write(data)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            st.unregister_viewer()
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+        except OSError:
+            pass
+
+    def _chunk_write(self, data):
+        self.wfile.write(("%x\r\n" % len(data)).encode("ascii"))
+        if data:
+            self.wfile.write(data)
+        self.wfile.write(b"\r\n")
 
     def _upnp_soap(self, service):
         length = int(self.headers.get("Content-Length") or 0)
@@ -420,6 +580,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise HttpError(404, "链接不存在或无权操作")
                 self.srv.store.revoke_link(link_id)
                 return self._json({"id": link_id, "revoked": True})
+            if path.startswith("/api/stream-keys/"):
+                u = self._require_client()
+                key_id = path[len("/api/stream-keys/"):]
+                keys = self.srv.store.list_stream_keys(
+                    None if self._admin() else u["username"])
+                if not any(k["id"] == key_id for k in keys):
+                    raise HttpError(404, "密钥不存在或无权操作")
+                self.srv.store.revoke_stream_key(key_id)
+                return self._json({"id": key_id, "revoked": True})
             if path.startswith("/api/admin/users/"):
                 self._require_admin()
                 user = urllib.parse.unquote(path[len("/api/admin/users/"):])

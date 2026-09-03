@@ -40,7 +40,7 @@ class Store:
                     self._db = self._empty()
             else:
                 self._db = self._empty()
-            for key in ("admin", "users", "sessions", "links"):
+            for key in ("admin", "users", "sessions", "links", "stream_keys"):
                 self._db.setdefault(key, {} if key != "admin" else None)
 
     def _save(self):
@@ -65,7 +65,8 @@ class Store:
 
     @staticmethod
     def _empty():
-        return {"admin": None, "users": {}, "sessions": {}, "links": {}}
+        return {"admin": None, "users": {}, "sessions": {}, "links": {},
+                "stream_keys": {}}
 
     # ---------- validation ----------
     @staticmethod
@@ -182,6 +183,8 @@ class Store:
                 del self._db["sessions"][k]
             for k in [k for k, v in self._db["links"].items() if v["user"] == username]:
                 del self._db["links"][k]
+            for k in [k for k, v in self._db["stream_keys"].items() if v["user"] == username]:
+                del self._db["stream_keys"][k]
             self._save()
         return True
 
@@ -215,20 +218,20 @@ class Store:
                 self._save()
 
     # ---------- time-limited media links ----------
-    def create_link(self, user, media_id, ttl):
+    def create_link(self, user, target, ttl, kind="media"):
         ttl = max(60, min(int(ttl or 1800), MAX_LINK_TTL))
         token = new_token()
         with self._lock:
             self._maybe_cleanup()
             h = token_hash(token)
             self._db["links"][h] = {
-                "user": user, "media": media_id,
+                "user": user, "target": target, "kind": kind,
                 "created": time.time(), "expires": time.time() + ttl,
             }
             self._save()
         return token, self._db["links"][h]["expires"], h[:16]
 
-    def check_link(self, token, media_id):
+    def check_link(self, token, target):
         if not token:
             return False
         with self._lock:
@@ -240,7 +243,7 @@ class Store:
                 del self._db["links"][h]
                 self._save()
                 return False
-            return l["media"] == media_id
+            return l.get("target", l.get("media", "")) == target
 
     def list_links(self, user=None):
         now = time.time()
@@ -251,7 +254,9 @@ class Store:
                     continue
                 if user and l["user"] != user:
                     continue
-                out.append({"id": h[:16], "user": l["user"], "media": l["media"],
+                out.append({"id": h[:16], "user": l["user"],
+                            "target": l.get("target", l.get("media", "")),
+                            "kind": l.get("kind", "media"),
                             "created": l["created"], "expires": l["expires"]})
         out.sort(key=lambda x: x["expires"])
         return out
@@ -261,6 +266,61 @@ class Store:
             for h in list(self._db["links"].keys()):
                 if h.startswith(link_id):
                     del self._db["links"][h]
+                    self._save()
+                    return True
+        return False
+
+    # ---------- publish stream keys (HTTP-TS ingest) ----------
+    def create_stream_key(self, user, stream_id, ttl):
+        ttl = max(60, min(int(ttl or 3600), MAX_LINK_TTL))
+        token = new_token()
+        with self._lock:
+            self._maybe_cleanup()
+            h = token_hash(token)
+            self._db["stream_keys"][h] = {
+                "user": user, "stream_id": stream_id,
+                "created": time.time(), "expires": time.time() + ttl,
+            }
+            self._save()
+        return token, self._db["stream_keys"][h]["expires"], h[:16]
+
+    def check_stream_key(self, token, stream_id):
+        """Validate an ingest key; returns owner username or None."""
+        if not token:
+            return None
+        with self._lock:
+            h = token_hash(token)
+            k = self._db["stream_keys"].get(h)
+            if not k:
+                return None
+            if k["expires"] < time.time():
+                del self._db["stream_keys"][h]
+                self._save()
+                return None
+            if k["stream_id"] != stream_id:
+                return None
+            return k["user"]
+
+    def list_stream_keys(self, user=None):
+        now = time.time()
+        with self._lock:
+            out = []
+            for h, k in self._db["stream_keys"].items():
+                if k["expires"] < now:
+                    continue
+                if user and k["user"] != user:
+                    continue
+                out.append({"id": h[:16], "user": k["user"],
+                            "stream_id": k["stream_id"],
+                            "created": k["created"], "expires": k["expires"]})
+        out.sort(key=lambda x: x["expires"])
+        return out
+
+    def revoke_stream_key(self, key_id):
+        with self._lock:
+            for h in list(self._db["stream_keys"].keys()):
+                if h.startswith(key_id):
+                    del self._db["stream_keys"][h]
                     self._save()
                     return True
         return False

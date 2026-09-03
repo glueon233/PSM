@@ -59,6 +59,34 @@
 
     <div class="section-head"><h2>我的限时链接</h2></div>
     <div id="link-list"><div class="empty">暂无链接，申请后显示在这里</div></div>
+
+    <div class="section-head"><h2>直播推流（HTTP-TS）</h2></div>
+    <section class="help card">
+      <p class="hint">服务器通过 <b>MPEG-TS over HTTP POST</b> 接收推流。获取推流密钥后，用任意支持 HTTP 输出的
+      TS 推流工具推送（VLC/OBS/ffmpeg）。推流期间观众可凭限时观看链接在 VLC 中实时观看。</p>
+      <div class="publish-row">
+        <input type="text" id="pub-stream-id" placeholder="流名称（如 live1，3-64 位字母/数字/_-）" pattern="[A-Za-z0-9_\-]{3,64}">
+        <select class="ttl-select" id="pub-ttl">
+          <option value="1800">30 分钟</option>
+          <option value="3600" selected>1 小时</option>
+          <option value="7200">2 小时</option>
+          <option value="21600">6 小时</option>
+        </select>
+        <button class="btn primary" id="btn-get-key">获取推流密钥</button>
+      </div>
+      <div id="publish-result" class="hidden">
+        <p class="hint">推流地址（VLC: 媒体 → 串流 → 目标 HTTP + TS；或 ffmpeg）：</p>
+        <p><span class="code" id="publish-url">--</span>
+          <button class="btn small" id="btn-copy-publish">复制</button></p>
+        <p class="hint">ffmpeg 示例：<span class="code" id="ffmpeg-cmd">--</span></p>
+        <p class="hint">密钥有效期至 <b id="publish-expires">--</b>，可重复用于同一流名；同一时间一个流只允许一个推流端。</p>
+      </div>
+    </section>
+    <div class="section-head"><h2>我的推流密钥</h2></div>
+    <div id="key-list"><div class="empty">暂无密钥，获取后显示在这里</div></div>
+
+    <div class="section-head"><h2>直播大厅 <span class="muted" id="live-count"></span></h2></div>
+    <div id="live-list"><div class="empty">暂无在线直播</div></div>
   </section>
 </main>
 

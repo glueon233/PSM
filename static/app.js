@@ -278,6 +278,29 @@ async function loadStreams() {
     b.addEventListener("click", () => stopHls(b.dataset.streamStop)));
 }
 
+/* ---------- live streams (admin) ---------- */
+async function loadAdminLive() {
+  const { items } = await api("/api/live");
+  $("#admin-live-list").innerHTML = items.length
+    ? items.map((l) => `
+      <div class="stream-item">
+        <span class="sname">${escapeHtml(l.id)}</span>
+        <span class="lexp muted">推流者 ${escapeHtml(l.publisher)} · ${l.viewers} 人观看 · ${(l.bytes_in / 1e6).toFixed(1)} MB · 空闲 ${l.age}s</span>
+        <button class="btn small danger" data-kick="${encodePath(l.id)}">踢出</button>
+      </div>`).join("")
+    : '<div class="empty">暂无直播流</div>';
+  $("#admin-live-list").querySelectorAll("[data-kick]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await api(`/api/admin/live/${b.dataset.kick}/kick`, { method: "POST" });
+        toast("已断开推流连接");
+        loadAdminLive();
+      } catch (e) {
+        toast("操作失败: " + e.message);
+      }
+    }));
+}
+
 /* ---------- boot ---------- */
 async function boot() {
   try {
@@ -290,7 +313,7 @@ async function boot() {
     location.href = "/admin/login.html";
     return;
   }
-  await Promise.all([loadStatus(), loadVideos(), loadStreams(), loadUsers(), loadAdminLinks()]);
+  await Promise.all([loadStatus(), loadVideos(), loadStreams(), loadUsers(), loadAdminLinks(), loadAdminLive()]);
 }
 
 $("#btn-refresh").addEventListener("click", () => { loadVideos(); loadStatus(); });
@@ -305,5 +328,6 @@ $("#preview-modal").addEventListener("click", (e) => {
 
 boot();
 setInterval(loadStreams, 3000);
+setInterval(loadAdminLive, 4000);
 setInterval(() => { loadUsers(); loadAdminLinks(); }, 15000);
 setInterval(loadStatus, 10000);
