@@ -64,12 +64,18 @@ class DlnaServer:
         self.msearch_count = 0
         self._uuid = self._load_uuid(uuid_path)
         self.udn = "uuid:" + self._uuid
-        self.advertise_ip = _lan_ip() if host in ("0.0.0.0", "::", "") else host
         self._sock = None
         self._tx = None
         self._joined = set()
         self._thread = None
         self._stop_evt = threading.Event()
+
+    @property
+    def advertise_ip(self):
+        """Current LAN IP (dynamic: survives network/Wi-Fi changes)."""
+        if self.host in ("0.0.0.0", "::", ""):
+            return _lan_ip()
+        return self.host
 
     # ---------- windows SSDP service handling ----------
     @staticmethod
