@@ -5,6 +5,7 @@ Pure stdlib parsers used for probing duration/bitrate and DIDL tag enrichment
 """
 
 import os
+import re
 import struct
 
 # ---------- FLAC ----------
@@ -174,7 +175,97 @@ def read_dff_info(path):
         return {}, {}
 
 
-# ---------- ID3v2 ----------
+# ---------- subtitles ----------
+
+LANG_MAP = {
+    "zh-cn": "简体中文", "chs": "简体中文", "sc": "简体中文", "zh-hans": "简体中文",
+    "zh-tw": "繁體中文", "cht": "繁體中文", "tc": "繁體中文", "zh-hant": "繁體中文",
+    "zh": "中文", "en": "English", "ja": "日本語", "jp": "日本語",
+    "ko": "한국어", "fr": "Français", "de": "Deutsch", "es": "Español",
+    "ru": "Русский",
+}
+
+
+def guess_language_from_name(name):
+    stem = os.path.splitext(name)[0]
+    parts = stem.split(".")
+    if len(parts) >= 2:
+        key = parts[-1].lower()
+        return LANG_MAP.get(key)
+    return None
+
+
+def _ass_time_to_seconds(t):
+    # H:MM:SS.cc
+    try:
+        h, rest = t.split(":", 1)
+        m, rest2 = rest.split(":", 1)
+        s, c = rest2.split(".", 1)
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(c.ljust(2, "0")[:2]) / 100.0
+    except (ValueError, AttributeError):
+        return None
+
+
+def read_subtitle_info(path):
+    """Return (info dict, tags dict) for .ass/.srt subtitle files."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        try:
+            with open(path, "r", encoding="gb18030", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            return {}, {}
+    if ext == ".ass":
+        return _ass_info(text)
+    if ext == ".srt":
+        return _srt_info(text)
+    return {}, {}
+
+
+def _ass_info(text):
+    info = {}
+    tags = {}
+    max_end = 0.0
+    in_events = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_events = stripped.lower().startswith("[events]")
+            continue
+        if not in_events:
+            m = re.match(r"^(Title|Original Script|PlayResX|PlayResY)\s*:\s*(.*)$", stripped)
+            if m:
+                tags[m.group(1).lower().replace(" ", "_")] = m.group(2).strip()
+            continue
+        if stripped.lower().startswith("dialogue:"):
+            try:
+                _layer, start, end = stripped.split(",", 3)[:3]
+                end_s = _ass_time_to_seconds(end.strip())
+                if end_s:
+                    max_end = max(max_end, end_s)
+            except (ValueError, IndexError):
+                continue
+    if max_end:
+        info["duration"] = max_end
+    info["codec"] = "ASS 字幕"
+    return info, tags
+
+
+def _srt_info(text):
+    info = {"codec": "SRT 字幕"}
+    max_end = 0.0
+    for line in text.splitlines():
+        m = re.match(r"^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})", line)
+        if m:
+            end = (int(m.group(5)) * 3600 + int(m.group(6)) * 60 + int(m.group(7))
+                   + int(m.group(8).ljust(3, "0")) / 1000.0)
+            max_end = max(max_end, end)
+    if max_end:
+        info["duration"] = max_end
+    return info, {}
 
 _ID3_FRAMES = {"TIT2": "title", "TPE1": "artist", "TALB": "album",
                "TCON": "genre", "TDRC": "year", "TYER": "year", "TORY": "year"}

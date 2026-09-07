@@ -27,6 +27,8 @@ MIME_TYPES = {
     ".wv": "audio/x-wavpack",
     ".ape": "audio/x-ape",
     ".opus": "audio/opus",
+    ".ass": "text/x-ass",
+    ".srt": "application/x-subrip",
 }
 
 MEDIA_EXTS = tuple(sorted(MIME_TYPES.keys()))

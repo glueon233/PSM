@@ -176,6 +176,7 @@ async function loadVideos() {
 
 function renderCard(v) {
   const res = v.width ? `${v.width}×${v.height}` : null;
+  const isSub = v.type === "subtitle";
   const previewBtn = isPreviewable(v.ext)
     ? `<button class="btn small" data-preview="${encodePath(v.id)}" data-title="${escapeHtml(v.name)}" data-ext="${v.ext}">▶ 浏览器预览</button>`
     : "";
@@ -183,16 +184,18 @@ function renderCard(v) {
   <div class="vcard" data-id="${encodePath(v.id)}">
     <div class="vcard-top">
       <div class="vname">${escapeHtml(v.name)}</div>
-      <span class="badge">${escapeHtml(v.ext.slice(1).toUpperCase())}</span>
+      <span class="badge">${isSub ? "字幕" : escapeHtml(v.ext.slice(1).toUpperCase())}</span>
     </div>
     <div class="vmeta">
       <span>${fmtDuration(v.duration)}</span>
       <span>${fmtSize(v.size)}</span>
       <span>${escapeHtml(v.codec)}</span>
+      ${v.track ? `<span>${escapeHtml(v.track)}</span>` : ""}
+      ${v.language ? `<span>${escapeHtml(v.language)}</span>` : ""}
       ${res ? `<span>${res}</span>` : ""}
     </div>
     <div class="vactions">
-      <button class="btn primary small" data-link="${encodePath(v.id)}">生成 VLC 限时链接</button>
+      <button class="btn primary small" data-link="${encodePath(v.id)}">${isSub ? "生成下载链接" : "生成 VLC 限时链接"}</button>
       ${previewBtn}
       <button class="btn small" data-hls-start="${encodePath(v.id)}">HLS 直播</button>
     </div>

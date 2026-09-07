@@ -134,16 +134,19 @@ async function loadVideos() {
 
 function renderCard(v) {
   const previewable = PREVIEWABLE.has(v.ext);
+  const isSub = v.type === "subtitle";
   return `
   <div class="vcard">
     <div class="vcard-top">
       <div class="vname">${escapeHtml(v.name)}</div>
-      <span class="badge">${escapeHtml(v.ext.slice(1).toUpperCase())}</span>
+      <span class="badge">${isSub ? "字幕" : escapeHtml(v.ext.slice(1).toUpperCase())}</span>
     </div>
     <div class="vmeta">
       ${v.duration ? `<span>${fmtDuration(v.duration)}</span>` : ""}
       <span>${fmtSize(v.size)}</span>
       <span>${escapeHtml(v.codec)}</span>
+      ${v.track ? `<span>${escapeHtml(v.track)}</span>` : ""}
+      ${v.language ? `<span>${escapeHtml(v.language)}</span>` : ""}
     </div>
     <div class="vactions">
       ${previewable
@@ -155,7 +158,7 @@ function renderCard(v) {
         <option value="3600">1 小时</option>
         <option value="7200">2 小时</option>
       </select>
-      <button class="btn primary small" data-request="${encodePath(v.id)}">申请链接</button>
+      <button class="btn primary small" data-request="${encodePath(v.id)}">${isSub ? "获取下载链接" : "申请链接"}</button>
     </div>
   </div>`;
 }

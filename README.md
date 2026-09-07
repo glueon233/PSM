@@ -172,6 +172,12 @@ python server.py --host 0.0.0.0 --port 8000 --source source --hls-dir hls \
 | 视频 | `.mp4 .m4v .mkv .webm .avi .mov .flv .wmv .ts` |
 | 无损/高保真音频 | `.flac .wav .dsf .dff .dsd .wv .ape` |
 | 有损音频 | `.mp3 .aac .ogg .opus .m4a` |
+| 字幕 | `.ass .srt` |
+
+> 字幕支持：解析 ASS（Dialogue 时间轴/[Script Info] 标题）与 SRT 时长、自动识别
+> 文件名语言标签（`.zh-cn` `.sc` `.tc` `.en` 等）。DLNA 浏览时字幕**挂载到同名视频**
+> （额外 `res` 元素 + 三星 `sec:CaptionInfoEx`），不单独列出；网页端可申请限时
+> 下载链接（`text/x-ass` / `application/x-subrip`）。
 
 > 高保真支持：FLAC（含 Vorbis Comments 标签）、DSD（DSF/DFF，DSD64-512，含 ID3v2 标签）。
 > 服务器自动解析采样率/码率/声道/时长并写入 DIDL（`bitrate`、`sampleFrequency`、

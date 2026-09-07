@@ -31,6 +31,7 @@ DLNA_FLAGS = "01700000000000000000000000000000"
 
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
               ".dsf", ".dff", ".dsd", ".wv", ".ape", ".opus"}
+SUBTITLE_EXTS = {".ass", ".srt"}
 PN_MAP = {
     ".mp4": "MP4", ".m4v": "MP4", ".avi": "AVI",
     ".mkv": "MATROSKA", ".mp3": "MP3",
@@ -614,9 +615,10 @@ class DlnaServer:
         for name in names:
             full = os.path.join(base, name)
             rel = os.path.relpath(full, self.source_dir)
+            ext = os.path.splitext(name)[1].lower()
             if os.path.isdir(full):
                 entries.append(self._container_entry(rel, name))
-            elif name.lower().endswith(MEDIA_EXTS):
+            elif name.lower().endswith(MEDIA_EXTS) and ext not in SUBTITLE_EXTS:
                 entries.append(self._item_entry(rel, name))
         return entries
 
@@ -668,6 +670,7 @@ class DlnaServer:
         parent = "0" if os.sep not in rel else "C:" + os.path.dirname(rel).replace(os.sep, "/")
         meta = ""
         title = name
+        sub_res = ""
         if is_audio:
             tags = read_tags_for(full)
             if tags.get("title"):
@@ -676,10 +679,12 @@ class DlnaServer:
                              ("genre", "upnp:genre"), ("year", "upnp:year")):
                 if tags.get(key):
                     meta += "<%s>%s</%s>" % (tag, xml_escape(tags[key]), tag)
+        else:
+            sub_res = self._subtitle_res(rel)
         return ('<item id="I:%s" parentID="%s" restricted="1">'
                 "<dc:title>%s</dc:title>"
                 '<upnp:class>%s</upnp:class>%s'
-                '<res protocolInfo="%s" %s>%s</res>'
+                '<res protocolInfo="%s" %s>%s</res>%s'
                 "</item>") % (
             xml_escape(rel.replace(os.sep, "/")),
             xml_escape(parent),
@@ -688,7 +693,42 @@ class DlnaServer:
             meta,
             xml_escape(pi),
             " ".join(res_attrs),
-            xml_escape(url))
+            xml_escape(url),
+            sub_res)
+
+    def _subtitle_res(self, rel):
+        """Attach matching subtitle files (same basename, optionally with a
+        language tag like <name>.zh-cn.ass) to a video item.
+
+        Exposed as an extra <res> element (text/x-ass or srt) plus the
+        Samsung-style sec:CaptionInfoEx for SRT tracks."""
+        full = os.path.join(self.source_dir, rel)
+        base = os.path.splitext(full)[0]
+        bname = os.path.basename(base)
+        bdir = os.path.dirname(base)
+        out = []
+        for ext in (".ass", ".srt"):
+            cand = base + ext
+            if not os.path.isfile(cand):
+                try:
+                    matches = [os.path.join(bdir, f) for f in os.listdir(bdir)
+                               if f.startswith(bname + ".") and f.lower().endswith(ext)]
+                except OSError:
+                    matches = []
+                if len(matches) == 1:
+                    cand = matches[0]
+                else:
+                    continue
+            rel_sub = os.path.relpath(cand, self.source_dir)
+            sub_url = "http://%s:%d/MediaItems/%s" % (
+                self.advertise_ip, self.port, quote_relpath(rel_sub))
+            mime = guess_mime(cand)
+            out.append('<res protocolInfo="http-get:*:%s:*">%s</res>'
+                       % (mime, xml_escape(sub_url)))
+            if ext == ".srt":
+                out.append('<sec:CaptionInfoEx sec:type="srt">%s</sec:CaptionInfoEx>'
+                           % xml_escape(sub_url))
+        return "".join(out)
 
     @staticmethod
     def _fmt_duration(sec):
@@ -703,7 +743,8 @@ class DlnaServer:
                 '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
                 'xmlns:dc="http://purl.org/dc/elements/1.1/" '
                 'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" '
-                'xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
+                'xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/" '
+                'xmlns:sec="http://www.sec.co.kr/">'
                 + "".join(entries)
                 + "</DIDL-Lite>")
 

@@ -6,8 +6,20 @@ import struct
 from .util import MEDIA_EXTS, safe_join
 
 
+SUBTITLE_EXTS = {".ass", ".srt"}
+
+
+def media_type(ext):
+    if ext in SUBTITLE_EXTS:
+        return "subtitle"
+    if ext in {".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
+               ".dsf", ".dff", ".dsd", ".wv", ".ape", ".opus"}:
+        return "audio"
+    return "video"
+
+
 def scan_library(source_dir):
-    from .tags import read_tags_for
+    from .tags import guess_language_from_name, read_subtitle_info, read_tags_for
     items = []
     for dirpath, _dirnames, filenames in os.walk(source_dir):
         for name in filenames:
@@ -15,11 +27,25 @@ def scan_library(source_dir):
                 continue
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, source_dir)
+            ext = os.path.splitext(name)[1].lower()
+            if ext in SUBTITLE_EXTS:
+                info, tags = read_subtitle_info(full)
+                info["size"] = os.path.getsize(full)
+                items.append({
+                    "id": rel, "name": name, "ext": ext,
+                    "size": info["size"],
+                    "duration": info.get("duration"),
+                    "codec": info.get("codec", "subtitle"),
+                    "type": "subtitle",
+                    "track": tags.get("title") or None,
+                    "language": guess_language_from_name(name),
+                })
+                continue
             info = probe(full)
             items.append({
                 "id": rel,
                 "name": name,
-                "ext": os.path.splitext(name)[1].lower(),
+                "ext": ext,
                 "size": os.path.getsize(full),
                 "duration": info.get("duration"),
                 "codec": info.get("codec", "unknown"),
@@ -28,6 +54,7 @@ def scan_library(source_dir):
                 "bitrate": info.get("bitrate"),
                 "sample_rate": info.get("sample_rate"),
                 "channels": info.get("channels"),
+                "type": media_type(ext),
                 "tags": read_tags_for(full),
             })
     items.sort(key=lambda i: i["name"].lower())
