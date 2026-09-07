@@ -137,12 +137,13 @@ python server.py --port 8000 --admin-user admin --admin-pass 你的管理员密�
 
 ## 启用 HLS 直播（可选）
 
-检测到 `ffmpeg` 在 PATH 中时自动启用；未安装则直连串流不受影响。
+检测到 `ffmpeg` 时自动启用 HLS 转码（查找顺序：PATH → `D:\ffmpeg\ffmpeg.exe` →
+`C:\ffmpeg\bin\ffmpeg.exe` → WinGet/chocolatey → pip 安装的 imageio-ffmpeg）。
 安装方式任选：
 
 ```powershell
 winget install Gyan.FFmpeg
-# 或手动下载放到 C:\ffmpeg\bin\ffmpeg.exe
+# 或 pip install imageio-ffmpeg（自动携带静态 ffmpeg 二进制）
 ```
 
 启动 HLS 后，VLC 打开网络串流粘贴 `http://localhost:8000/hls/<hash>/index.m3u8` 即可。
@@ -173,6 +174,10 @@ python server.py --host 0.0.0.0 --port 8000 --source source --hls-dir hls \
 | 无损/高保真音频 | `.flac .wav .dsf .dff .dsd .wv .ape` |
 | 有损音频 | `.mp3 .aac .ogg .opus .m4a` |
 | 字幕 | `.ass .srt` |
+
+> MKV 支持：纯 stdlib 的 EBML/Matroska 解析器提取时长（TimestampScale×Duration）、
+> 轨道编码（H.264/HEVC/AV1/VP9/FLAC/AAC/DTS…）、分辨率、采样率与声道，
+> 无 ffmpeg 也能完整显示元数据。
 
 > 字幕支持：解析 ASS（Dialogue 时间轴/[Script Info] 标题）与 SRT 时长、自动识别
 > 文件名语言标签（`.zh-cn` `.sc` `.tc` `.en` 等）。DLNA 浏览时字幕**挂载到同名视频**

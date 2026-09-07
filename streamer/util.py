@@ -59,10 +59,18 @@ def find_ffmpeg():
         return exe
     candidates = [
         r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"D:\ffmpeg\ffmpeg.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links\ffmpeg.exe"),
         r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
     ]
     for c in candidates:
         if os.path.isfile(c):
             return c
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.isfile(exe):
+            return exe
+    except Exception:
+        pass
     return None

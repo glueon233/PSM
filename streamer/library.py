@@ -76,9 +76,39 @@ def probe(path):
             return _probe_dsf(path)
         if ext == ".dff":
             return _probe_dff(path)
+        if ext == ".mkv":
+            return _probe_mkv(path)
     except Exception:
         pass
     return {}
+
+
+def _probe_mkv(path):
+    from .tags import read_mkv_info
+    info, _tags = read_mkv_info(path)
+    if not info:
+        return {}
+    out = {"codec": _mkv_codec_label(info),
+           "width": info.get("width"),
+           "height": info.get("height"),
+           "sample_rate": info.get("sample_rate"),
+           "channels": info.get("channels")}
+    if info.get("duration"):
+        out["duration"] = info["duration"]
+        try:
+            out["bitrate"] = int(os.path.getsize(path) * 8 / info["duration"])
+        except OSError:
+            pass
+    return out
+
+
+def _mkv_codec_label(info):
+    parts = []
+    if info.get("video_codec"):
+        parts.append(info["video_codec"])
+    if info.get("audio_codec"):
+        parts.append(info["audio_codec"])
+    return " + ".join(parts) or "Matroska"
 
 
 def _probe_flac(path):

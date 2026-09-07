@@ -290,6 +290,253 @@ def _decode_text(data):
         return raw.decode("latin1", "replace").strip("\x00")
 
 
+# ---------- Matroska / EBML ----------
+
+CODEC_MAP = {
+    "V_MPEG4/ISO/AVC": "h264", "V_MPEGH/ISO/HEVC": "hevc",
+    "V_MPEG4/ISO/ASP": "mpeg4", "V_MPEG2": "mpeg2", "V_MPEG1": "mpeg1",
+    "V_VP8": "vp8", "V_VP9": "vp9", "V_AV1": "av1",
+    "V_THEORA": "theora", "V_MS/VFW/FOURCC": "msvc",
+    "A_FLAC": "FLAC", "A_AAC": "AAC", "A_MPEG/L3": "MP3",
+    "A_MPEG/L2": "MP2", "A_AC3": "AC3", "A_EAC3": "EAC3",
+    "A_DTS": "DTS", "A_OPUS": "Opus", "A_VORBIS": "Vorbis",
+    "A_PCM/INT/LIT": "PCM", "A_PCM/FLOAT/IEEE": "PCMf",
+    "A_TRUEHD": "TrueHD", "A_MLP": "MLP", "A_ALAC": "ALAC",
+    "A_WAVPACK4": "WavPack", "A_APE": "APE", "A_TTA1": "TTA",
+    "S_TEXT/UTF8": "SRT", "S_TEXT/ASS": "ASS", "S_TEXT/SSA": "SSA",
+    "S_VOBSUB": "VobSub", "S_HDMV/PGS": "PGS",
+}
+
+
+def _ebml_read_id(f):
+    b = f.read(1)
+    if not b:
+        return None, 0
+    first = b[0]
+    if first == 0:
+        return None, 0
+    length = 1
+    mask = 0x80
+    while not (first & mask):
+        mask >>= 1
+        length += 1
+    eid = first & (mask - 1)
+    for _ in range(length - 1):
+        nxt = f.read(1)
+        if not nxt:
+            return None, 0
+        eid = (eid << 8) | nxt[0]
+    return eid, length
+
+
+def _ebml_read_size(f):
+    b = f.read(1)
+    if not b:
+        return None, 0
+    first = b[0]
+    if first == 0:
+        return None, 0
+    length = 1
+    mask = 0x80
+    while not (first & mask):
+        mask >>= 1
+        length += 1
+    size = first & (mask - 1)
+    for _ in range(length - 1):
+        nxt = f.read(1)
+        if not nxt:
+            return None, 0
+        size = (size << 8) | nxt[0]
+    # unknown size: every value bit set (all-ones payload)
+    if size == (1 << (7 * (length - 1))) - 1:
+        return None, length
+    return size, length
+
+
+def _ebml_read_uint(data):
+    v = 0
+    for b in data:
+        v = (v << 8) | b
+    return v
+
+
+def read_mkv_info(path):
+    """Parse Matroska segment: duration, tracks (codecs), resolution."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"\x1a\x45\xdf\xa3":
+                return {}, {}
+            # skip the EBML header element (its size follows the magic)
+            size, slen = _ebml_read_size(f)
+            if size is None:
+                return {}, {}
+            f.seek(size, 1)
+            # walk top-level: find Segment (0x08538067)
+            while True:
+                eid, _ = _ebml_read_id(f)
+                if eid is None:
+                    return {}, {}
+                size, _ = _ebml_read_size(f)
+                if eid == 0x08538067:
+                    return _parse_segment(f, size)
+                if size is None:
+                    return {}, {}
+                f.seek(size, 1)
+    except OSError:
+        return {}, {}
+
+
+def _parse_segment(f, size):
+    info = {}
+    timestamp_scale = 1000000.0
+    duration = None
+    seg_end = None
+    if size is not None:
+        seg_end = f.tell() + size
+    while True:
+        if seg_end is not None and f.tell() >= seg_end - 1:
+            break
+        eid, idlen = _ebml_read_id(f)
+        if eid is None or idlen == 0:
+            break
+        esize, slen = _ebml_read_size(f)
+        if esize is None:
+            break
+        if eid == 0x0549A966:  # Info
+            ts, dur = _parse_info(f, esize)
+            if ts:
+                timestamp_scale = ts
+            if dur is not None:
+                duration = dur
+        elif eid == 0x0654AE6B:  # Tracks
+            _parse_tracks(f, esize, info)
+        else:
+            f.seek(esize, 1)
+    if duration is not None:
+        info["duration"] = duration * timestamp_scale / 1e9
+    return info, {}
+
+
+def _parse_info(f, size):
+    end = f.tell() + size
+    timestamp_scale = None
+    duration = None
+    while f.tell() < end - 1:
+        eid, idlen = _ebml_read_id(f)
+        if eid is None or idlen == 0:
+            break
+        esize, _ = _ebml_read_size(f)
+        if esize is None:
+            break
+        data = f.read(esize) if esize <= 16 else None
+        if data is None:
+            f.seek(esize, 1)
+            continue
+        if eid == 0x0AD7B1 and len(data) <= 8:  # TimestampScale
+            timestamp_scale = _ebml_read_uint(data)
+        elif eid == 0x0489 and len(data) in (4, 8):  # Duration (float)
+            duration = struct.unpack(">d" if len(data) == 8 else ">f", data)[0]
+    return timestamp_scale, duration
+
+
+def _parse_tracks(f, size, info):
+    end = f.tell() + size
+    while f.tell() < end - 1:
+        eid, idlen = _ebml_read_id(f)
+        if eid is None or idlen == 0:
+            break
+        esize, _ = _ebml_read_size(f)
+        if esize is None:
+            break
+        if eid == 0x2E:  # TrackEntry
+            _parse_track_entry(f, esize, info)
+        else:
+            f.seek(esize, 1)
+
+
+def _parse_track_entry(f, size, info):
+    end = f.tell() + size
+    track_type = None
+    codec_id = None
+    width = height = None
+    sample_rate = channels = None
+    while f.tell() < end - 1:
+        eid, idlen = _ebml_read_id(f)
+        if eid is None or idlen == 0:
+            break
+        esize, _ = _ebml_read_size(f)
+        if esize is None:
+            break
+        if eid == 0x03 and esize <= 4:  # TrackType
+            track_type = _ebml_read_uint(f.read(esize))
+        elif eid == 0x06:  # CodecID
+            codec_id = f.read(esize).decode("latin1", "replace").strip("\x00")
+        elif eid == 0x60:  # Video
+            width, height = _parse_video(f, esize)
+        elif eid == 0x61:  # Audio
+            sample_rate, channels = _parse_audio(f, esize)
+        else:
+            f.seek(esize, 1)
+    if track_type == 1 and codec_id:  # video
+        info.setdefault("video_codec", CODEC_MAP.get(codec_id, codec_id))
+        if width:
+            info["width"] = width
+        if height:
+            info["height"] = height
+    elif track_type == 2 and codec_id:  # audio
+        info.setdefault("audio_codec", CODEC_MAP.get(codec_id, codec_id))
+        if sample_rate:
+            info.setdefault("sample_rate", int(sample_rate))
+        if channels:
+            info.setdefault("channels", channels)
+    elif track_type == 17 and codec_id and "sub_codec" not in info:
+        info["sub_codec"] = CODEC_MAP.get(codec_id, codec_id)
+
+
+def _parse_video(f, size):
+    end = f.tell() + size
+    width = height = None
+    while f.tell() < end - 1:
+        eid, idlen = _ebml_read_id(f)
+        if eid is None or idlen == 0:
+            break
+        esize, _ = _ebml_read_size(f)
+        if esize is None:
+            break
+        if eid == 0x30 and esize <= 4:  # PixelWidth
+            width = _ebml_read_uint(f.read(esize))
+        elif eid == 0x3A and esize <= 4:  # PixelHeight
+            height = _ebml_read_uint(f.read(esize))
+        else:
+            f.seek(esize, 1)
+    return width, height
+
+
+def _parse_audio(f, size):
+    end = f.tell() + size
+    sample_rate = channels = None
+    while f.tell() < end - 1:
+        eid, idlen = _ebml_read_id(f)
+        if eid is None or idlen == 0:
+            break
+        esize, _ = _ebml_read_size(f)
+        if esize is None:
+            break
+        if eid == 0x35 and esize <= 8:  # SamplingFrequency (float)
+            data = f.read(esize)
+            if len(data) == 8:
+                sample_rate = struct.unpack(">d", data)[0]
+            elif len(data) == 4:
+                sample_rate = struct.unpack(">f", data)[0]
+            else:
+                sample_rate = _ebml_read_uint(data)
+        elif eid == 0x1F and esize <= 4:  # Channels
+            channels = _ebml_read_uint(f.read(esize))
+        else:
+            f.seek(esize, 1)
+    return sample_rate, channels
+
+
 def parse_id3v2(data):
     tags = {}
     if len(data) < 10 or data[:3] != b"ID3":
