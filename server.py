@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from streamer.app import StreamingServer, Handler  # noqa: E402
 from streamer.dlna import DlnaServer  # noqa: E402
+from streamer.util import ensure_firewall_rules  # noqa: E402
 
 
 def main():
@@ -27,10 +28,10 @@ def main():
     parser.add_argument("--data-dir", default="data", help="user/link database directory")
     parser.add_argument("--device-name", default="StreamMedia", help="DLNA device friendly name")
     parser.add_argument("--no-dlna", action="store_true", help="disable DLNA/UPnP")
-    parser.add_argument("--dlna-auto-fix-ssdp", action="store_true",
-                        help="try to stop Windows SSDPSRV service (admin required). "
-                             "Enables same-host VLC discovery but breaks Windows UPnP "
-                             "clients like AIMP. Default: keep SSDPSRV for AIMP support.")
+    parser.add_argument("--dlna-keep-ssdpsrv", action="store_true",
+                        help="keep the Windows SSDP service running (for AIMP/WMP), "
+                             "accepting less reliable LAN discovery. Default: stop it "
+                             "for reliable DLNA discovery on TVs/phones/VLC.")
     parser.add_argument("--admin-user", default="admin", help="admin username")
     parser.add_argument("--admin-pass", default=None,
                         help="admin password. Sets the password on first run; "
@@ -72,11 +73,16 @@ def main():
     print("  VLC: 媒体 -> 打开网络串流 -> 粘贴限时链接")
     print("=" * 62)
 
+    fw = ensure_firewall_rules(httpd.server_port)
+    if fw:
+        print("  Firewall: %s" % fw)
+        print("  (needed for LAN devices to reach the server; runs as admin)")
+
     if not args.no_dlna:
         uuid_path = os.path.join(base, ".dlna_uuid")
         dlna = DlnaServer(args.host, httpd.server_port, source_dir,
                           friendly_name=args.device_name, uuid_path=uuid_path,
-                          auto_fix_ssdp=args.dlna_auto_fix_ssdp)
+                          auto_fix_ssdp=not args.dlna_keep_ssdpsrv)
         httpd.dlna = dlna
         dlna.start()
         print("  DLNA: device '%s' (AIMP: 音乐库 -> DLNA; VLC: 本地网络)" % args.device_name)

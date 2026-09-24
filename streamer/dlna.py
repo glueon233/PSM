@@ -60,7 +60,7 @@ class DlnaServer:
         self.port = port
         self.source_dir = source_dir
         self.friendly_name = friendly_name
-        self.auto_fix_ssdp = auto_fix_ssdp
+        self.keep_ssdpsrv = not auto_fix_ssdp
         self.enabled = False
         self.msearch_count = 0
         self._uuid = self._load_uuid(uuid_path)
@@ -92,33 +92,31 @@ class DlnaServer:
 
     def _prepare_windows_ssdp(self):
         """On Windows, the built-in SSDP service (SSDPSRV) owns multicast
-        delivery on port 1900. Two coexistence strategies exist:
+        delivery on port 1900. When it runs, our socket cannot receive
+        M-SEARCH and LAN discovery becomes unreliable (SSDPSRV's cache
+        proxying is intermittent).
 
-        * SSDPSRV running: it caches our NOTIFY announcements and answers
-          M-SEARCH on our behalf. Windows UPnP clients (AIMP plugin, WMP)
-          can discover us; clients using their own SSDP stack (VLC) may not.
-        * SSDPSRV stopped: direct SSDP clients (VLC, TVs, phones) work,
-          but Windows UPnP based clients (AIMP plugin) lose discovery.
-
-        Default: leave SSDPSRV alone. Only stop it when explicitly enabled
-        with auto_fix_ssdp (requires admin).
+        Default: stop SSDPSRV (needs admin) so this server fully owns SSDP
+        and reliably answers M-SEARCH for TVs/phones/VLC. Pass
+        --dlna-keep-ssdpsrv to keep it for Windows-UPnP clients (AIMP/WMP),
+        accepting the less reliable discovery path.
         """
         if os.name != "nt" or not self._ssdpsrv_running():
             return
-        if not self.auto_fix_ssdp:
-            print("[dlna] Windows SSDP service (SSDPSRV) is running: our NOTIFY announcements")
-            print("[dlna] will be cached by Windows. AIMP/WMP can discover the server.")
-            print("[dlna] Same-host VLC discovery may not work in this mode (platform limitation).")
+        if self.keep_ssdpsrv:
+            print("[dlna] SSDPSRV kept running (--dlna-keep-ssdpsrv): AIMP/WMP support,")
+            print("[dlna] but LAN SSDP discovery is unreliable in this mode.")
             return
-        print("[dlna] trying to stop SSDPSRV for direct SSDP clients (VLC) ...")
+        print("[dlna] SSDPSRV is running and owns multicast port 1900; stopping it")
+        print("[dlna] so this server can reliably answer M-SEARCH on the LAN ...")
         rc = subprocess.call(["net", "stop", "SSDPSRV"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if rc == 0:
             print("[dlna] stopped SSDPSRV (restore with: net start SSDPSRV)")
         else:
             print("[dlna] WARNING: cannot stop SSDPSRV (administrator required)")
-            print("[dlna] WARNING: same-host VLC discovery may not work")
-            print("[dlna] Fix: run this program as administrator, or execute: net stop SSDPSRV")
+            print("[dlna] WARNING: LAN DLNA discovery may be unreliable")
+            print("[dlna] Fix: run this program as administrator, or: net stop SSDPSRV")
 
     # ---------- identity ----------
     @staticmethod
@@ -230,18 +228,45 @@ class DlnaServer:
             tx.bind(("", 0))
         return tx
 
-    @staticmethod
-    def _ipv4_interfaces():
+    _IFACE_CACHE = {"ts": 0.0, "ips": frozenset()}
+
+    @classmethod
+    def _ipv4_interfaces(cls):
+        """Current non-loopback IPv4 addresses (survives network/Wi-Fi changes).
+
+        Uses `Get-NetIPAddress` on Windows for live results (gethostname()
+        may return stale IPs from the hosts/DNS cache), falling back to
+        getaddrinfo + the default-route probe elsewhere."""
+        now = time.time()
+        if now - cls._IFACE_CACHE["ts"] < 30:
+            return cls._IFACE_CACHE["ips"]
         ips = set()
-        try:
-            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-                ip = info[4][0]
-                if ip.startswith(("127.", "169.254.")):
-                    continue
-                ips.add(ip)
-        except OSError:
-            pass
-        return ips
+        if os.name == "nt":
+            try:
+                out = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue"
+                     " | ForEach-Object { $_.IPAddress }"],
+                    timeout=10, stderr=subprocess.DEVNULL)
+                for ln in out.decode("utf-8", "replace").splitlines():
+                    ip = ln.strip()
+                    if ip and not ip.startswith(("127.", "169.254.")):
+                        ips.add(ip)
+            except Exception:
+                pass
+        if not ips:
+            try:
+                for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                    ip = info[4][0]
+                    if not ip.startswith(("127.", "169.254.")):
+                        ips.add(ip)
+            except OSError:
+                pass
+        lan = _lan_ip()
+        if lan and not lan.startswith(("127.", "169.254.")):
+            ips.add(lan)
+        cls._IFACE_CACHE = {"ts": now, "ips": frozenset(ips)}
+        return cls._IFACE_CACHE["ips"]
 
     def _ssdp_loop(self):
         self._prepare_windows_ssdp()
@@ -263,7 +288,7 @@ class DlnaServer:
             if now - last_alive >= 60:
                 self._send_alive_all()
                 last_alive = now
-            if now - last_rejoin >= 30:
+            if now - last_rejoin >= 10:
                 self._rejoin_interfaces(self._sock)
                 last_rejoin = now
             try:
